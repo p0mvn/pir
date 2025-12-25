@@ -1,4 +1,5 @@
 use rand::Rng;
+use rayon::prelude::*;
 
 use crate::{
     matrix_database::MatrixDatabase,
@@ -44,6 +45,7 @@ impl PirServer {
 
     /// Matrix multiplication: DB · A
     /// (db.rows × db.cols) · (db.cols × n) → (db.rows × n)
+    /// Parallelized over rows using rayon
     pub fn compute_hint(&self) -> ClientHint {
         assert_eq!(self.db.cols, self.a.rows, "Inner dimensions must match");
 
@@ -51,20 +53,28 @@ impl PirServer {
         let cols = self.a.cols; // n
         let inner = self.db.cols; // √N
 
-        let mut data = vec![0u32; rows * cols];
+        // Parallel computation: each row is independent
+        // Compute all rows in parallel, then flatten
+        let row_results: Vec<Vec<u32>> = (0..rows)
+            .into_par_iter()
+            .map(|i| {
+                (0..cols)
+                    .map(|j| {
+                        let mut sum = 0u32;
+                        for k in 0..inner {
+                            // hint_c[i,j] += db[i,k] * A[k,j]
+                            let db_val = self.db.data[i * self.db.cols + k];
+                            let a_val = self.a.get(k, j);
+                            sum = sum.wrapping_add(db_val.wrapping_mul(a_val));
+                        }
+                        sum
+                    })
+                    .collect()
+            })
+            .collect();
 
-        for i in 0..rows {
-            for j in 0..cols {
-                let mut sum = 0u32;
-                for k in 0..inner {
-                    // hint_c[i,j] += db[i,k] * A[k,j]
-                    let db_val = self.db.data[i * self.db.cols + k];
-                    let a_val = self.a.get(k, j);
-                    sum = sum.wrapping_add(db_val.wrapping_mul(a_val));
-                }
-                data[i * cols + j] = sum;
-            }
-        }
+        // Flatten row vectors into single data vector
+        let data: Vec<u32> = row_results.into_iter().flatten().collect();
 
         ClientHint { data, rows, cols }
     }

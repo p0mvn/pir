@@ -85,6 +85,7 @@ impl MatrixDatabase {
     }
 
     /// Matrix-vector multiply
+    /// Note: NOT parallelized — rayon overhead exceeds benefit for µs-scale operations
     pub fn multiply_vec(&self, query: &[u32]) -> Vec<u32> {
         assert_eq!(query.len(), self.cols, "Query length must match columns");
         let mut result = vec![0u32; self.rows];
