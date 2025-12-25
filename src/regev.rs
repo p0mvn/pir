@@ -1,6 +1,6 @@
 use crate::params::LweParams;
-use rand::distr::StandardUniform;
 use rand::Rng;
+use rand::distr::StandardUniform;
 
 // ============================================================================
 // Reusable primitives (used by both Regev and PIR)
@@ -92,14 +92,11 @@ pub fn keygen(params: &LweParams, rng: &mut impl Rng) -> SecretKeyOwned {
 /// Encrypt a message using the secret key
 pub fn encrypt(
     params: &LweParams,
+    a: &[u64],
     sk: &SecretKey,
     msg: u64,
     rng: &mut impl Rng,
 ) -> CiphertextOwned {
-    let a: Vec<u64> = (0..params.n)
-        .map(|_| rng.random_range(0..params.q))
-        .collect();
-
     let e = sample_noise(params.noise_stddev, rng);
 
     // c = aᵀs + e + Δμ mod q
@@ -107,7 +104,7 @@ pub fn encrypt(
         .wrapping_add(e)
         .wrapping_add(params.delta() * msg);
 
-    CiphertextOwned { a, c }
+    CiphertextOwned { a: a.to_vec(), c }
 }
 
 /// Add two ciphertexts homomorphically
@@ -133,7 +130,12 @@ mod tests {
         let mut rng = rand::rng();
         let sk = keygen(&params, &mut rng);
         let msg = 123;
-        let ct = encrypt(&params, &sk.as_ref(), msg, &mut rng);
+
+        let a: Vec<u64> = (0..params.n)
+            .map(|_| rng.random_range(0..params.q))
+            .collect();
+
+        let ct = encrypt(&params, &a, &sk.as_ref(), msg, &mut rng);
         let dec = decrypt(&params, &sk.as_ref(), &ct.as_ref());
         assert_eq!(dec, msg);
     }
@@ -144,8 +146,18 @@ mod tests {
         let mut rng = rand::rng();
         let sk = keygen(&params, &mut rng);
         let msg = 123;
-        let ct1 = encrypt(&params, &sk.as_ref(), msg, &mut rng);
-        let ct2 = encrypt(&params, &sk.as_ref(), msg, &mut rng);
+
+        let a1: Vec<u64> = (0..params.n)
+            .map(|_| rng.random_range(0..params.q))
+            .collect();
+
+        let ct1 = encrypt(&params, &a1, &sk.as_ref(), msg, &mut rng);
+
+        let a2: Vec<u64> = (0..params.n)
+            .map(|_| rng.random_range(0..params.q))
+            .collect();
+
+        let ct2 = encrypt(&params, &a2, &sk.as_ref(), msg, &mut rng);
 
         // Add the two ciphertexts homomorphically
         let c_combined = add_ciphertexts(&ct1.as_ref(), &ct2.as_ref());

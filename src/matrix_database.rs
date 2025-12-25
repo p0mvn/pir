@@ -1,3 +1,4 @@
+#[derive(Clone)]
 pub struct MatrixDatabase {
     pub data: Vec<u64>,
     pub rows: usize,

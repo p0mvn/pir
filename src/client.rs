@@ -1,7 +1,7 @@
 use crate::{
     params::LweParams,
     pir::{Answer, ClientHint, LweMatrix, Query, SetupMessage},
-    regev::{decrypt, dot_product, sample_noise, Ciphertext, SecretKey},
+    regev::{Ciphertext, SecretKey, decrypt, encrypt},
 };
 use rand::Rng;
 
@@ -46,24 +46,20 @@ impl PirClient {
         let secret: Vec<u64> = (0..self.params.n).map(|_| rng.random()).collect();
 
         // qu = A·s + e + Δ·u_col
-        let mut query_data = vec![0u64; self.db_cols];
-
-        for i in 0..self.db_cols {
-            // A[i,:] · s
-            let a_row = self.a.row(i);
-            let mut val = dot_product(a_row, &secret);
-
-            // + e (noise)
-            val = val.wrapping_add(sample_noise(self.params.noise_stddev, rng));
-
-            // + Δ·u_col (unit vector scaled by Δ)
-            // This selects the column when matrix-multiplied against DB
-            if i == col {
-                val = val.wrapping_add(self.params.delta());
-            }
-
-            query_data[i] = val;
-        }
+        // Encrypt unit vector: query[i] = Enc(1) if i == col, else Enc(0)
+        let query_data: Vec<u64> = (0..self.db_cols)
+            .map(|i| {
+                let msg = if i == col { 1 } else { 0 };
+                encrypt(
+                    &self.params,
+                    self.a.row(i),
+                    &SecretKey { s: &secret },
+                    msg,
+                    rng,
+                )
+                .c
+            })
+            .collect();
 
         let state = QueryState { row_start, secret };
         (state, Query(query_data))
@@ -74,9 +70,7 @@ impl PirClient {
     /// Each byte is recovered by Regev-decrypting (hint_c[row,:], ans[row])
     /// where hint_c[row,:] acts as 'a' and ans[row] acts as 'c'
     pub fn recover(&self, state: &QueryState, answer: &Answer) -> Vec<u8> {
-        let sk = SecretKey {
-            s: &state.secret,
-        };
+        let sk = SecretKey { s: &state.secret };
 
         (0..self.record_size)
             .map(|byte_idx| {
