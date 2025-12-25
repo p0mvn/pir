@@ -1,6 +1,7 @@
 use rand::Rng;
 
 /// LWE public matrix A (shared between client and server)
+#[derive(Clone)]
 pub struct LweMatrix {
     pub data: Vec<u64>, // row-major: A[i][j] = data[i * cols + j]
     pub rows: usize,    // √N (db.cols)

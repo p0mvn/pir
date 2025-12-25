@@ -1,3 +1,4 @@
+#[derive(Clone, Copy)]
 pub struct LweParams {
     pub n: usize,          // LWE dimension (e.g., 1024)
     pub q: u64,            // Modulus (e.g., 2^32)

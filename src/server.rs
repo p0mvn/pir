@@ -13,20 +13,24 @@ pub struct PirServer {
 }
 
 impl PirServer {
-    /// SimplePIR Setup: compute hint_c = DB · A
-    ///
-    /// Returns (A, hint_c) where:
-    /// - A is shared/public (√N × n)
-    /// - hint_c is sent to client (db.rows × n)
-    /// - Server stores nothing extra (hint_s = ⊥)
-    pub fn setup(self, params: &LweParams, rng: &mut impl Rng) -> (LweMatrix, ClientHint) {
-        // A ∈ ℤ_q^{√N × n}
-        let a = LweMatrix::random(self.db.cols, params.n, rng);
+    /// Create a new server with the given database
+    /// Generates the public matrix A and computes hint_c = DB · A
+    pub fn new(db: MatrixDatabase, params: &LweParams, rng: &mut impl Rng) -> Self {
+        let a = LweMatrix::random(db.cols, params.n, rng);
+        Self { db, a }
+    }
 
-        // hint_c = DB · A ∈ ℤ_q^{db.rows × n}
+    /// Get the setup message to send to the client
+    /// Contains A and hint_c = DB · A
+    pub fn setup_message(&self) -> crate::pir::SetupMessage {
         let hint_c = self.compute_hint();
-
-        (a, hint_c)
+        crate::pir::SetupMessage {
+            a: self.a.clone(),
+            hint_c,
+            db_cols: self.db.cols,
+            db_rows: self.db.rows,
+            record_size: self.db.record_size,
+        }
     }
 
     /// Matrix multiplication: DB · A
