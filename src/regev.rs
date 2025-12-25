@@ -94,15 +94,13 @@ pub fn encrypt(
     sk: &SecretKey,
     msg: u32,
     rng: &mut impl Rng,
-) -> CiphertextOwned {
+) -> u32 {
     let e = sample_noise(params.noise_stddev, rng);
 
     // c = aᵀs + e + Δμ mod q
-    let c = dot_product(&a, sk.s)
+    dot_product(&a, sk.s)
         .wrapping_add(e)
-        .wrapping_add(params.delta().wrapping_mul(msg));
-
-    CiphertextOwned { a: a.to_vec(), c }
+        .wrapping_add(params.delta().wrapping_mul(msg))
 }
 
 /// Add two ciphertexts homomorphically
@@ -132,7 +130,7 @@ mod tests {
         let a: Vec<u32> = (0..params.n).map(|_| rng.random()).collect();
 
         let ct = encrypt(&params, &a, &sk.as_ref(), msg, &mut rng);
-        let dec = decrypt(&params, &sk.as_ref(), &ct.as_ref());
+        let dec = decrypt(&params, &sk.as_ref(), &Ciphertext { a: &a, c: ct });
         assert_eq!(dec, msg);
     }
 
@@ -152,7 +150,7 @@ mod tests {
         let ct2 = encrypt(&params, &a2, &sk.as_ref(), msg, &mut rng);
 
         // Add the two ciphertexts homomorphically
-        let c_combined = add_ciphertexts(&ct1.as_ref(), &ct2.as_ref());
+        let c_combined = add_ciphertexts(&Ciphertext { a: &a1, c: ct1 }, &Ciphertext { a: &a2, c: ct2 });
 
         // Decrypt the combined ciphertext
         let dec = decrypt(&params, &sk.as_ref(), &c_combined.as_ref());
