@@ -28,6 +28,22 @@ impl LweMatrix {
     pub fn get(&self, row: usize, col: usize) -> u64 {
         self.data[row * self.cols + col]
     }
+
+    /// Get row slice A[row, :]
+    #[inline]
+    pub fn row(&self, row: usize) -> &[u64] {
+        let start = row * self.cols;
+        &self.data[start..start + self.cols]
+    }
+}
+
+impl ClientHint {
+    /// Get row slice hint_c[row, :]
+    #[inline]
+    pub fn row(&self, row: usize) -> &[u64] {
+        let start = row * self.cols;
+        &self.data[start..start + self.cols]
+    }
 }
 
 // ============================================================================

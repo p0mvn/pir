@@ -1,7 +1,7 @@
 use crate::{
     params::LweParams,
-    pir::{ClientHint, LweMatrix, Query, SetupMessage},
-    regev::sample_noise,
+    pir::{Answer, ClientHint, LweMatrix, Query, SetupMessage},
+    regev::{dot_product, round_decode, sample_noise},
 };
 use rand::Rng;
 
@@ -50,28 +50,45 @@ impl PirClient {
 
         for i in 0..self.db_cols {
             // A[i,:] · s
-            let mut dot = 0u64;
-            for j in 0..self.params.n {
-                dot = dot.wrapping_add(self.a.get(i, j).wrapping_mul(secret[j]));
-            }
+            let a_row = self.a.row(i);
+            let mut val = dot_product(a_row, &secret);
 
             // + e (noise)
-            let noise = sample_noise(self.params.noise_stddev, rng);
-            dot = dot.wrapping_add(noise);
+            val = val.wrapping_add(sample_noise(self.params.noise_stddev, rng));
 
             // + Δ·u_col (unit vector scaled by Δ)
-            // This selects the column of the unit vector
-            // when matrix-multiplied against the database
-            // server side.
+            // This selects the column when matrix-multiplied against DB
             if i == col {
-                dot = dot.wrapping_add(self.params.delta());
+                val = val.wrapping_add(self.params.delta());
             }
 
-            query_data[i] = dot;
+            query_data[i] = val;
         }
 
         let state = QueryState { row_start, secret };
         (state, Query(query_data))
+    }
+
+    /// Recover: decrypt the target record from the answer
+    ///
+    /// d̂ = ans[row] - hint_c[row, :] · s
+    /// d = round(d̂ / Δ) mod p
+    pub fn recover(&self, state: &QueryState, answer: &Answer) -> Vec<u8> {
+        let mut result = Vec::with_capacity(self.record_size);
+
+        for byte_idx in 0..self.record_size {
+            let row = state.row_start + byte_idx;
+
+            // d̂ = ans[row] - hint_c[row, :] · s
+            let hint_row = self.hint_c.row(row);
+            let noisy = answer.0[row].wrapping_sub(dot_product(hint_row, &state.secret));
+
+            // Round and decode to recover plaintext byte
+            let recovered = round_decode(noisy, &self.params);
+            result.push(recovered as u8);
+        }
+
+        result
     }
 }
 
@@ -183,5 +200,166 @@ mod tests {
             state1.secret, state2.secret,
             "Each query should have a fresh secret"
         );
+    }
+
+    #[test]
+    fn test_recover_with_zero_hint() {
+        // With hint_c = 0, recovery simplifies to just rounding ans/Δ
+        let n = 4;
+        let record_size = 2;
+        let db_cols = 2;
+
+        let params = LweParams {
+            n,
+            q: 1u64 << 32,
+            p: 256,
+            noise_stddev: 0.0,
+        };
+        let delta = params.delta();
+
+        // Zero hint means hint_c[row,:] · s = 0
+        let hint_c = ClientHint {
+            data: vec![0u64; 4 * n], // 4 rows (2 groups × 2 bytes)
+            rows: 4,
+            cols: n,
+        };
+
+        let msg = SetupMessage {
+            a: LweMatrix {
+                data: vec![0; db_cols * n],
+                rows: db_cols,
+                cols: n,
+            },
+            hint_c,
+            db_cols,
+            db_rows: 4,
+            record_size,
+        };
+
+        let client = PirClient::new(msg, params);
+
+        // Simulate answer for record in group 0: bytes [42, 99]
+        // answer[0] = 42 * Δ, answer[1] = 99 * Δ
+        let answer = Answer(vec![42 * delta, 99 * delta, 0, 0]);
+
+        let state = QueryState {
+            row_start: 0,
+            secret: vec![12345; n], // any secret, hint is zero
+        };
+
+        let recovered = client.recover(&state, &answer);
+        assert_eq!(recovered, vec![42, 99]);
+    }
+
+    #[test]
+    fn test_recover_with_nonzero_hint() {
+        // Verifies hint_c · s is correctly subtracted
+        let n = 2;
+        let record_size = 1;
+        let db_cols = 2;
+
+        let params = LweParams {
+            n,
+            q: 1u64 << 32,
+            p: 256,
+            noise_stddev: 0.0,
+        };
+        let delta = params.delta();
+
+        // hint_c[0,:] = [1, 2] (for row 0)
+        // hint_c[1,:] = [3, 4] (for row 1)
+        let hint_c = ClientHint {
+            data: vec![1, 2, 3, 4],
+            rows: 2,
+            cols: n,
+        };
+
+        let msg = SetupMessage {
+            a: LweMatrix {
+                data: vec![0; db_cols * n],
+                rows: db_cols,
+                cols: n,
+            },
+            hint_c,
+            db_cols,
+            db_rows: 2,
+            record_size,
+        };
+
+        let client = PirClient::new(msg, params);
+
+        // secret = [10, 20]
+        // hint_c[0,:] · s = 1*10 + 2*20 = 50
+        let secret = vec![10u64, 20];
+        let hint_dot = 1 * 10 + 2 * 20; // = 50
+
+        // For plaintext = 77:
+        // answer[0] = 77*Δ + hint_dot (so after subtracting hint_dot, we get 77*Δ)
+        let plaintext = 77u64;
+        let answer = Answer(vec![
+            (plaintext * delta).wrapping_add(hint_dot),
+            0, // unused
+        ]);
+
+        let state = QueryState {
+            row_start: 0,
+            secret,
+        };
+
+        let recovered = client.recover(&state, &answer);
+        assert_eq!(recovered, vec![77]);
+    }
+
+    #[test]
+    fn test_recover_second_group() {
+        // Test recovering a record from group 1 (not group 0)
+        let n = 2;
+        let record_size = 2;
+        let db_cols = 2;
+
+        let params = LweParams {
+            n,
+            q: 1u64 << 32,
+            p: 256,
+            noise_stddev: 0.0,
+        };
+        let delta = params.delta();
+
+        let hint_c = ClientHint {
+            data: vec![0u64; 4 * n], // 4 rows
+            rows: 4,
+            cols: n,
+        };
+
+        let msg = SetupMessage {
+            a: LweMatrix {
+                data: vec![0; db_cols * n],
+                rows: db_cols,
+                cols: n,
+            },
+            hint_c,
+            db_cols,
+            db_rows: 4,
+            record_size,
+        };
+
+        let client = PirClient::new(msg, params);
+
+        // Record in group 1 starts at row 2 (group * record_size = 1 * 2)
+        // Bytes: [200, 201]
+        let answer = Answer(vec![
+            0,
+            0, // group 0 (rows 0-1)
+            200 * delta,
+            201 * delta, // group 1 (rows 2-3) ← target
+        ]);
+
+        let state = QueryState {
+            row_start: 2, // group 1
+            secret: vec![0; n],
+        };
+
+        let recovered = client.recover(&state, &answer);
+        assert_eq!(recovered, vec![200, 201]);
     }
 }

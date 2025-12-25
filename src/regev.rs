@@ -11,6 +11,36 @@ pub struct Ciphertext {
     pub c: u64,      // aᵀs + e + Δμ
 }
 
+// ============================================================================
+// Reusable primitives (used by both Regev and PIR)
+// ============================================================================
+
+/// Compute dot product: a·s mod q (wrapping arithmetic)
+pub fn dot_product(a: &[u64], s: &[u64]) -> u64 {
+    a.iter()
+        .zip(s.iter())
+        .map(|(&ai, &si)| ai.wrapping_mul(si))
+        .fold(0u64, |acc, x| acc.wrapping_add(x))
+}
+
+/// Round and decode: converts noisy value to plaintext
+/// noisy = e + Δ·μ → μ
+pub fn round_decode(noisy: u64, params: &LweParams) -> u64 {
+    let delta = params.delta();
+    let half_delta = delta / 2;
+    (noisy.wrapping_add(half_delta) / delta) % params.p
+}
+
+/// Sample noise from uniform distribution scaled by stddev
+pub fn sample_noise(stddev: f64, rng: &mut impl Rng) -> u64 {
+    let noise: f64 = rng.sample(StandardUniform);
+    (noise * stddev) as u64
+}
+
+// ============================================================================
+// Regev encryption scheme
+// ============================================================================
+
 /// Generates a random secret key
 pub fn keygen(params: &LweParams, rng: &mut impl Rng) -> SecretKey {
     let s: Vec<u64> = (0..params.n)
@@ -27,43 +57,18 @@ pub fn encrypt(params: &LweParams, sk: &SecretKey, msg: u64, rng: &mut impl Rng)
 
     let e = sample_noise(params.noise_stddev, rng);
 
-    // aᵀs mod q
-    let dot: u64 = a
-        .iter()
-        .zip(sk.s.iter())
-        .map(|(&ai, &si)| ai.wrapping_mul(si))
-        .fold(0u64, |acc, x| acc.wrapping_add(x));
-
     // c = aᵀs + e + Δμ mod q
-    let c = dot
-        .wrapping_add(e as u64)
+    let c = dot_product(&a, &sk.s)
+        .wrapping_add(e)
         .wrapping_add(params.delta() * msg);
 
     Ciphertext { a, c }
 }
 
-// Sample noise from the standard normal distribution
-// This is used to add noise to the ciphertext
-pub fn sample_noise(stddev: f64, rng: &mut impl Rng) -> u64 {
-    let noise: f64 = rng.sample(StandardUniform);
-    (noise * stddev) as u64
-}
-
-// Decrypt a ciphertext using the secret key
+/// Decrypt a ciphertext using the secret key
 pub fn decrypt(params: &LweParams, sk: &SecretKey, ct: &Ciphertext) -> u64 {
-    // c - aᵀs
-    let dot: u64 =
-        ct.a.iter()
-            .zip(sk.s.iter())
-            .map(|(&ai, &si)| ai.wrapping_mul(si))
-            .fold(0u64, |acc, x| acc.wrapping_add(x));
-
-    let noisy = ct.c.wrapping_sub(dot);
-
-    // Round to nearest multiple of Δ
-    let delta = params.delta();
-    let half_delta = delta / 2;
-    ((noisy + half_delta) / delta) % params.p
+    let noisy = ct.c.wrapping_sub(dot_product(&ct.a, &sk.s));
+    round_decode(noisy, params)
 }
 
 // Add two ciphertexts homomorphically
@@ -79,6 +84,7 @@ pub fn add_ciphertexts(ct1: &Ciphertext, ct2: &Ciphertext) -> Ciphertext {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
 
