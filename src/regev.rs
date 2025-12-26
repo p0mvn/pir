@@ -145,6 +145,25 @@ mod tests {
     }
 
     #[test]
+    fn test_encrypt_decrypt_non_power_of_two_plaintext_modulus() {
+        // Paper-style p choices (e.g. 231, 328, 464, ...) require Δ = floor(2^32 / p)
+        // which should work for non-power-of-two p as well.
+        let params = LweParams {
+            n: 256,
+            p: 231,
+            noise_stddev: 0.0, // deterministic test
+        };
+        let mut rng = rand::rng();
+        let sk = keygen(&params, &mut rng);
+        let msg = 1; // message in Z_p
+
+        let a: Vec<u32> = (0..params.n).map(|_| rng.random()).collect();
+        let ct = encrypt(&params, &a, &sk.as_ref(), msg, &mut rng);
+        let dec = decrypt(&params, &sk.as_ref(), &Ciphertext { a: &a, c: ct });
+        assert_eq!(dec, msg);
+    }
+
+    #[test]
     fn test_encrypt_decrypt_homomorphic() {
         let params = LweParams::default_128bit();
         let mut rng = rand::rng();

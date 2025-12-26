@@ -63,7 +63,7 @@ impl PirServer {
                         let mut sum = 0u32;
                         for k in 0..inner {
                             // hint_c[i,j] += db[i,k] * A[k,j]
-                            let db_val = self.db.data[i * self.db.cols + k];
+                            let db_val = self.db.data[i * self.db.cols + k] as u32;
                             let a_val = self.a.get(k, j);
                             sum = sum.wrapping_add(db_val.wrapping_mul(a_val));
                         }
@@ -81,7 +81,14 @@ impl PirServer {
 
     /// Answer: compute DB · query
     pub fn answer(&self, query: &Query) -> Answer {
-        Answer(self.db.multiply_vec(&query.0))
+        let mut out = vec![0u32; self.db.rows];
+        self.answer_into(query, &mut out);
+        Answer(out)
+    }
+
+    /// Answer into a caller-provided buffer (avoids allocation; useful for throughput benchmarks).
+    pub fn answer_into(&self, query: &Query, out: &mut [u32]) {
+        self.db.multiply_vec_into(&query.0, out)
     }
 }
 

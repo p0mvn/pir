@@ -15,3 +15,7 @@ criterion = "0.5"
 [[bench]]
 name = "pir_benchmark"
 harness = false
+
+[[bench]]
+name = "paper_simplepir"
+harness = false

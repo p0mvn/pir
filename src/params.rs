@@ -17,9 +17,11 @@ impl LweParams {
     /// Scaling factor Δ = ⌊q/p⌋ where q = 2^32
     /// For p = 256: Δ = 2^32 / 256 = 2^24 = 16777216
     pub fn delta(&self) -> u32 {
-        // q = 2^32, using wrapping division via bit shift
-        // 2^32 / p = 2^(32 - log2(p))
-        // For p = 256 = 2^8: delta = 2^24
-        (1u32 << 24) * (256 / self.p)
+        assert!(self.p >= 2, "plaintext modulus p must be >= 2");
+
+        // q = 2^32 does not fit in u32, so compute in u64 then cast back.
+        // Δ = floor(q / p)
+        let q: u64 = 1u64 << 32;
+        (q / (self.p as u64)) as u32
     }
 }

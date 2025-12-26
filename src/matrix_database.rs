@@ -1,6 +1,11 @@
 #[derive(Clone)]
 pub struct MatrixDatabase {
-    pub data: Vec<u32>,
+    /// Database payload stored compactly (one byte per plaintext element).
+    ///
+    /// This is critical for paper-comparable throughput: for "1-bit entries" we
+    /// pack 8 bits into one byte-sized plaintext element (p≈256 regime), so a
+    /// 1GiB database is actually ~1GiB in memory, not 4GiB.
+    pub data: Vec<u8>,
     pub rows: usize,
     pub cols: usize,
     /// Bytes per record
@@ -46,7 +51,7 @@ impl MatrixDatabase {
         let cols = records_per_group;
         let rows = record_size * num_groups;
 
-        let mut data = vec![0u32; rows * cols];
+        let mut data = vec![0u8; rows * cols];
 
         for (rec_idx, record) in records.iter().enumerate() {
             let group = rec_idx / records_per_group;
@@ -54,8 +59,46 @@ impl MatrixDatabase {
 
             for (byte_idx, &byte) in record.iter().take(record_size).enumerate() {
                 let row = group * record_size + byte_idx;
-                data[row * cols + col] = byte as u32;
+                data[row * cols + col] = byte;
             }
+        }
+
+        Self {
+            data,
+            rows,
+            cols,
+            record_size,
+            records_per_group,
+            num_records,
+        }
+    }
+
+    /// Create a database of `num_records` records (each `record_size` bytes),
+    /// filling values deterministically from a seed without constructing a giant
+    /// `Vec<Vec<u8>>`.
+    ///
+    /// This exists primarily to support paper-like benchmarks at 1GiB scale.
+    pub fn new_generated(num_records: usize, record_size: usize, seed: u64) -> Self {
+        use rand::Rng;
+        use rand::SeedableRng;
+        use rand_chacha::ChaCha20Rng;
+
+        let records_per_group = (num_records as f64).sqrt().ceil() as usize;
+        let num_groups = (num_records + records_per_group - 1) / records_per_group;
+
+        let cols = records_per_group;
+        let rows = record_size * num_groups;
+
+        let mut rng = {
+            let mut s = [0u8; 32];
+            s[..8].copy_from_slice(&seed.to_le_bytes());
+            ChaCha20Rng::from_seed(s)
+        };
+
+        // Fill row-major; for record_size==1 this matches record index ordering.
+        let mut data = vec![0u8; rows * cols];
+        for idx in 0..rows * cols {
+            data[idx] = rng.random();
         }
 
         Self {
@@ -78,25 +121,37 @@ impl MatrixDatabase {
     }
 
     /// Extract a full record from the answer column
-    pub fn extract_record(&self, answer: &[u32], record_idx: usize) -> Vec<u32> {
+    pub fn extract_record(&self, answer: &[u32], record_idx: usize) -> Vec<u8> {
         assert!(record_idx < self.num_records, "Record index out of bounds");
         let (row_start, _) = self.record_to_coords(record_idx);
-        answer[row_start..row_start + self.record_size].to_vec()
+        answer[row_start..row_start + self.record_size]
+            .iter()
+            .map(|&x| x as u8)
+            .collect()
     }
 
     /// Matrix-vector multiply
     /// Note: NOT parallelized — rayon overhead exceeds benefit for µs-scale operations
     pub fn multiply_vec(&self, query: &[u32]) -> Vec<u32> {
+        let mut out = vec![0u32; self.rows];
+        self.multiply_vec_into(query, &mut out);
+        out
+    }
+
+    /// Matrix-vector multiply into a caller-provided buffer (to avoid per-call allocation).
+    pub fn multiply_vec_into(&self, query: &[u32], out: &mut [u32]) {
         assert_eq!(query.len(), self.cols, "Query length must match columns");
-        let mut result = vec![0u32; self.rows];
+        assert_eq!(out.len(), self.rows, "Output length must match rows");
+
         for row in 0..self.rows {
+            let base = row * self.cols;
             let mut sum = 0u32;
             for col in 0..self.cols {
-                sum = sum.wrapping_add(self.data[row * self.cols + col].wrapping_mul(query[col]));
+                let db_val = self.data[base + col] as u32;
+                sum = sum.wrapping_add(db_val.wrapping_mul(query[col]));
             }
-            result[row] = sum;
+            out[row] = sum;
         }
-        result
     }
 }
 
