@@ -763,3 +763,12 @@ SimplePIR operates on elements in ℤ_p, but H and a₁ contain elements in ℤ_
 - Yiping Ma, Ke Zhong, Tal Rabin, and Sebastian Angel. Incremental offline/online PIR. USENIX Security, 2022.
 - [Checklist](https://eprint.iacr.org/2021/345)
   - Splits db into stable and recent parts
+
+### Sublinear-time PIR
+
+- Henry Corrigan-Gibbs and Dmitry Kogan. Private information
+retrieval with sublinear online time. In EUROCRYPT,
+2020.
+- Henry Corrigan-Gibbs, Alexandra Henzinger, and Dmitry
+Kogan. Single-server private information retrieval with
+sublinear amortized time. In EUROCRYPT, 2022.
