@@ -10,6 +10,27 @@ use crate::{
     regev::SecretKey,
 };
 
+// ============================================================================
+// Cross-term Computation
+// ============================================================================
+
+/// Compute cross term: Σ_j Σ_k H[j,k] × s_col[j] × s_row[k]
+///
+/// Simple loop implementation - allows LLVM to auto-vectorize the inner loop.
+#[inline]
+fn compute_cross_term(h_matrix: &[u32], s_col: &[u32], s_row: &[u32], n: usize) -> u32 {
+    let mut result = 0u32;
+    for j in 0..n {
+        let row_start = j * n;
+        let mut row_dot = 0u32;
+        for k in 0..n {
+            row_dot = row_dot.wrapping_add(h_matrix[row_start + k].wrapping_mul(s_row[k]));
+        }
+        result = result.wrapping_add(s_col[j].wrapping_mul(row_dot));
+    }
+    result
+}
+
 /// Client state for DoublePIR recovery (kept secret, not transmitted)
 pub struct DoublePirQueryState {
     /// Column index being queried
@@ -230,18 +251,17 @@ impl DoublePirClient {
                 let after_row = after_col.wrapping_sub(delta.wrapping_mul(hint_row_contrib));
 
                 // 3. Remove cross term: Σ_j Σ_k hint_cross[byte, j, k] × s_col[j] × s_row[k]
-                // hint_cross is stored as [byte][j][k] flattened
+                // Optimized as s_col · (H · s_row) using matrix factorization:
+                //   Step 1: v = H · s_row (matrix-vector product)
+                //   Step 2: result = s_col · v (dot product)
+                // This has better cache locality than the naive O(n²) loop.
                 let cross_base = byte_idx * n * n;
-                let mut cross_contrib = 0u32;
-                for j in 0..n {
-                    for k in 0..n {
-                        let h = self.hint_cross[cross_base + j * n + k];
-                        cross_contrib = cross_contrib.wrapping_add(
-                            h.wrapping_mul(state.secret_col[j])
-                             .wrapping_mul(state.secret_row[k])
-                        );
-                    }
-                }
+                let cross_contrib = compute_cross_term(
+                    &self.hint_cross[cross_base..cross_base + n * n],
+                    &state.secret_col,
+                    &state.secret_row,
+                    n,
+                );
                 let after_cross = after_row.wrapping_sub(cross_contrib);
 
                 // The remaining value is approximately Δ × plaintext + noise
