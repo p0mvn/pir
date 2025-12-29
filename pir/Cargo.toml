@@ -1,0 +1,18 @@
+[package]
+name = "pir"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rand = "0.9"
+rand_chacha = "0.9"
+rand_distr = "0.5"
+rayon = "1.10"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "pir_benchmark"
+harness = false
+
