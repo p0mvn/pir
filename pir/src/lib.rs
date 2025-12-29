@@ -1,3 +1,4 @@
+pub mod binary_fuse;
 pub mod double;
 pub mod lwe_to_rlwe;
 pub mod matrix_database;
@@ -11,5 +12,9 @@ pub mod ring_regev;
 pub mod simple;
 
 // Re-export commonly used types for convenience
+pub use binary_fuse::{
+    BinaryFuseError, BinaryFuseFilter, BinaryFuseParams, BinaryFuseStats, KeyPositions,
+    KeywordQuery,
+};
 pub use double::{DoublePir, DoublePirClient, DoublePirServer};
 pub use simple::{PirClient, PirServer, SimplePir};
