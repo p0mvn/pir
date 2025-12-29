@@ -2,7 +2,7 @@
 
 Lattice-based crytography is a type of cryptography that uses lattices as the underlying mathematical structure.
 
-Latest post-quantum encryption schemes are based on lattice-based cryptography. In turn, PIR protocols are based on these encryption schemes. 
+Latest post-quantum encryption schemes are based on lattice hardness assumptions. In turn, PIR protocols are based on these encryption schemes. 
 
 ## Short Integer Solutions (SIS) Problem
 
@@ -237,3 +237,141 @@ Ring-LWE's security relies on the hardness of problems in ideal lattices (lattic
 - **Worst-case to average-case**: Ring-LWE has quantum reductions from worst-case problems on ideal lattices (SVP in ideal lattices)
 - **More structure = potential weakness?**: The ring structure theoretically gives attackers more to exploit, but no practical attacks have emerged
 - **Practical security**: Ring-LWE is considered secure for appropriate parameters, and is used in post-quantum standards like Kyber/ML-KEM
+
+## LWE-to-RLWE Packing
+
+You have d separate LWE ciphertexts, each encrypting a single value μ₁, μ₂, ..., μ_d. You want to pack them into a single RLWE ciphertext that encrypts the polynomial:
+
+```
+μ(x) = μ₁ + μ₂x + μ₃x² + ⋯ + μ_d x^(d-1)
+```
+
+This achieves ~d/2× compression (from d(d+1) elements to 2d elements).
+
+### Step 1: Understanding the Ring R_q = Z_q[x]/(x^d + 1)
+
+This ring contains polynomials of degree < d, where arithmetic is done modulo q and modulo (x^d + 1).
+
+The key rule: **x^d = -1**
+
+```
+Example with d=4:
+x⁴ = -1
+x⁵ = x · x⁴ = -x
+x⁶ = -x²
+etc.
+```
+
+### Step 2: What Happens When You Multiply by x
+
+Take a polynomial s(x) = s₀ + s₁x + s₂x² + s₃x³
+
+Multiply by x:
+```
+x · s(x) = s₀x + s₁x² + s₂x³ + s₃x⁴
+         = s₀x + s₁x² + s₂x³ + s₃(-1)    ← using x⁴ = -1
+         = -s₃ + s₀x + s₁x² + s₂x³
+```
+
+**Result**: Coefficients rotate right, and the one that "wraps around" gets negated.
+
+| Before | s₀ | s₁ | s₂ | s₃ |
+|--------|----|----|----|----|
+| After  | -s₃ | s₀ | s₁ | s₂ |
+
+### Step 3: Building the Negacyclic Matrix
+
+If we apply this rotation repeatedly:
+
+```
+s(x)      → coefficients: [ s₀,  s₁,  s₂,  s₃]
+x·s(x)    → coefficients: [-s₃,  s₀,  s₁,  s₂]
+x²·s(x)   → coefficients: [-s₂, -s₃,  s₀,  s₁]
+x³·s(x)   → coefficients: [-s₁, -s₂, -s₃,  s₀]
+```
+
+Stack these as rows → **negacyclic matrix rot(s)**:
+
+```
+        [  s₀   s₁   s₂   s₃ ]
+rot(s) =[ -s₃   s₀   s₁   s₂ ]
+        [ -s₂  -s₃   s₀   s₁ ]
+        [ -s₁  -s₂  -s₃   s₀ ]
+```
+
+### Step 4: The Key Property
+
+**Claim**: rot(s) · v = coefficients of s(x) · v(x)
+
+Let's verify with v = [v₀, v₁, v₂, v₃]ᵀ representing v(x) = v₀ + v₁x + v₂x² + v₃x³
+
+The i-th row of rot(s) represents xⁱ · s(x).
+
+So:
+```
+rot(s) · v = v₀ · (row 0) + v₁ · (row 1) + v₂ · (row 2) + v₃ · (row 3)
+           = v₀ · s(x) + v₁ · x·s(x) + v₂ · x²·s(x) + v₃ · x³·s(x)
+           = s(x) · (v₀ + v₁x + v₂x² + v₃x³)
+           = s(x) · v(x)
+```
+
+**Matrix-vector multiplication = Polynomial multiplication!**
+
+### Step 5: Recall LWE Ciphertexts
+
+An LWE ciphertext is:
+```
+(a, b) where b = ⟨a, s⟩ + e + m
+```
+- a ∈ Z_q^d (random vector)
+- s ∈ Z_q^d (secret key)
+- ⟨a, s⟩ = a₀s₀ + a₁s₁ + ... + a_{d-1}s_{d-1} (inner product)
+
+### Step 6: Consider d LWE Ciphertexts with Special Structure
+
+Suppose we have d LWE ciphertexts where the `a` vectors form a negacyclic matrix:
+
+```
+Ciphertext 0: a₀ = [ a₀,  a₁,  a₂,  a₃],  b₀ = ⟨a₀, s⟩ + e₀ + m₀
+Ciphertext 1: a₁ = [-a₃,  a₀,  a₁,  a₂],  b₁ = ⟨a₁, s⟩ + e₁ + m₁
+Ciphertext 2: a₂ = [-a₂, -a₃,  a₀,  a₁],  b₂ = ⟨a₂, s⟩ + e₂ + m₂
+Ciphertext 3: a₃ = [-a₁, -a₂, -a₃,  a₀],  b₃ = ⟨a₃, s⟩ + e₃ + m₃
+```
+
+Notice: These `a` vectors are exactly the rows of rot(a) for polynomial a(x) = a₀ + a₁x + a₂x² + a₃x³
+
+### Step 7: Stack the Inner Products
+
+Compute all inner products at once:
+```
+[⟨a₀, s⟩]   [  a₀   a₁   a₂   a₃ ] [ s₀ ]
+[⟨a₁, s⟩] = [ -a₃   a₀   a₁   a₂ ] [ s₁ ]
+[⟨a₂, s⟩]   [ -a₂  -a₃   a₀   a₁ ] [ s₂ ]
+[⟨a₃, s⟩]   [ -a₁  -a₂  -a₃   a₀ ] [ s₃ ]
+
+            = rot(a) · s
+            = coefficients of a(x) · s(x)
+```
+
+### Step 8: This IS an RLWE Ciphertext!
+
+The d LWE ciphertexts together give us:
+```
+a(x) = a₀ + a₁x + a₂x² + a₃x³
+
+b(x) = b₀ + b₁x + b₂x² + b₃x³
+     = (⟨a₀,s⟩ + e₀ + m₀) + (⟨a₁,s⟩ + e₁ + m₁)x + ...
+     = a(x)·s(x) + e(x) + m(x)
+```
+
+This is exactly the RLWE encryption formula!
+
+### Step 9: The Payoff
+
+| Without packing | With packing |
+|-----------------|--------------|
+| d separate LWE ciphertexts | 1 RLWE ciphertext |
+| d separate decryptions | 1 polynomial decryption |
+| d × (d+1) scalars to transmit | 2 polynomials (2d scalars) |
+
+**The negacyclic structure is what makes the d LWE ciphertexts "compatible" with RLWE algebra.**
