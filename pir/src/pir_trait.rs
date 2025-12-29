@@ -178,10 +178,10 @@ mod tests {
     /// Test that SimplePIR works through the trait interface
     #[test]
     fn test_simple_pir_via_trait() {
-        use crate::client::PirClient as SimplePirClient;
+        use crate::simple::PirClient as SimplePirClient;
         use crate::matrix_database::MatrixDatabase;
         use crate::params::LweParams;
-        use crate::server::PirServer as SimplePirServer;
+        use crate::simple::PirServer as SimplePirServer;
 
         // Create test database
         let records: Vec<Vec<u8>> = (0..16)
@@ -221,7 +221,7 @@ mod tests {
         use crate::matrix_database::MatrixDatabase;
         use crate::params::LweParams;
         use crate::pir::{Answer, Query, SetupMessage};
-        use crate::server::PirServer as SimplePirServer;
+        use crate::simple::PirServer as SimplePirServer;
 
         let records: Vec<Vec<u8>> = (0..100).map(|i| vec![i as u8; 32]).collect();
         let record_refs: Vec<&[u8]> = records.iter().map(|r| r.as_slice()).collect();

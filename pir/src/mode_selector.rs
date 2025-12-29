@@ -26,13 +26,13 @@
 use rand::Rng;
 
 use crate::{
-    client::PirClient as SimplePirClient,
-    double_pir::{DoublePirClient, DoublePirServer, DoublePirSetup},
+    simple::PirClient as SimplePirClient,
+    double::{DoublePirClient, DoublePirServer, DoublePirSetup},
     matrix_database::{DoublePirDatabase, MatrixDatabase},
     params::LweParams,
     pir::SetupMessage as SimplePirSetup,
     pir_trait::{CommunicationCost, PirCosts, PirMode},
-    server::PirServer as SimplePirServer,
+    simple::PirServer as SimplePirServer,
 };
 
 // ============================================================================
@@ -443,7 +443,7 @@ impl UnifiedClient {
 /// Unified query
 pub enum UnifiedQuery {
     Simple(crate::pir::Query),
-    Double(crate::double_pir::DoublePirQuery),
+    Double(crate::double::DoublePirQuery),
 }
 
 impl UnifiedQuery {
@@ -466,14 +466,14 @@ impl CommunicationCost for UnifiedQuery {
 
 /// Unified query state
 pub enum UnifiedQueryState {
-    Simple(crate::client::QueryState),
-    Double(crate::double_pir::DoublePirQueryState),
+    Simple(crate::simple::QueryState),
+    Double(crate::double::DoublePirQueryState),
 }
 
 /// Unified answer
 pub enum UnifiedAnswer {
     Simple(crate::pir::Answer),
-    Double(crate::double_pir::DoublePirAnswer),
+    Double(crate::double::DoublePirAnswer),
 }
 
 impl UnifiedAnswer {

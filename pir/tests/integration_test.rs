@@ -7,10 +7,10 @@
 //! 4. Server computes answer = DB · query
 //! 5. Client recovers the original record
 
-use pir::client::PirClient;
+use pir::simple::PirClient;
 use pir::matrix_database::MatrixDatabase;
 use pir::params::LweParams;
-use pir::server::PirServer;
+use pir::simple::PirServer;
 
 /// Full PIR round-trip with zero noise (deterministic)
 #[test]

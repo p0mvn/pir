@@ -499,3 +499,4 @@ mod tests {
         assert_eq!(client.a.data, expected_a.data);
     }
 }
+

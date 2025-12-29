@@ -2,11 +2,11 @@ use rand::Rng;
 use rayon::prelude::*;
 
 use crate::{
-    client::SimplePir,
     matrix_database::MatrixDatabase,
     params::LweParams,
     pir::{Answer, ClientHint, LweMatrix, MatrixSeed, Query, SetupMessage},
     pir_trait::PirServer as PirServerTrait,
+    simple::SimplePir,
 };
 
 /// Server state
@@ -281,3 +281,4 @@ mod tests {
         );
     }
 }
+
