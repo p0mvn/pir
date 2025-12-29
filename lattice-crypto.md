@@ -375,3 +375,255 @@ This is exactly the RLWE encryption formula!
 | d × (d+1) scalars to transmit | 2 polynomials (2d scalars) |
 
 **The negacyclic structure is what makes the d LWE ciphertexts "compatible" with RLWE algebra.**
+
+### The Problem with Naive Packing
+
+The packing above only works when the `a` vectors are **rotations of a single polynomial**. But in real PIR:
+
+- The server computes responses using matrix-vector products
+- Each response LWE ciphertext has a **random, unstructured** `a` vector
+- These `a` vectors have NO relationship to each other
+
+We need a way to pack **arbitrary** LWE ciphertexts into RLWE.
+
+## Key Switching: Packing Arbitrary LWE Ciphertexts
+
+Key switching solves the problem of converting LWE ciphertexts with arbitrary `a` vectors into RLWE ciphertexts.
+
+### The Core Idea
+
+Any vector `a = [a₀, a₁, ..., a_{d-1}]` can be written as a linear combination of basis vectors:
+
+```
+a = a₀·[1,0,0,...] + a₁·[0,1,0,...] + a₂·[0,0,1,...] + ...
+```
+
+**Key insight**: If we know how to handle each basis vector separately, we can handle ANY vector by scaling and adding!
+
+The client pre-computes "helper ciphertexts" for each basis position. The server uses these helpers to convert any LWE ciphertext.
+
+### Concrete Example: d=2
+
+Let's work through the smallest possible example with actual numbers.
+
+**Setup:**
+```
+Dimension: d = 2
+Modulus: q = 97 (small prime for easy arithmetic)
+Ring: R = Z_97[x]/(x² + 1)
+
+LWE secret vector:  s = [3, 7]
+Ring secret polynomial:  S(x) = 3 + 7x  (same numbers as polynomial)
+```
+
+**The LWE ciphertext we want to convert** (encrypting message μ = 5):
+```
+a = [11, 4]    ← random vector (NOT structured!)
+c = ⟨a, s⟩ + μ
+  = 11·3 + 4·7 + 5
+  = 33 + 28 + 5
+  = 66
+
+Ciphertext: (a, c) = ([11, 4], 66)
+```
+
+Verify decryption: `c - ⟨a, s⟩ = 66 - 61 = 5 ✓`
+
+### Step 1: Client Creates Helper Ciphertexts
+
+The client (who knows `s`) creates RLWE encryptions of each secret component.
+
+**Helper for s[0] = 3:**
+```
+Pick random A₀(x) = 2 + 5x
+
+Compute B₀(x) = A₀(x)·S(x) + s[0]
+             = (2 + 5x)·(3 + 7x) + 3
+
+Expand the product:
+  (2 + 5x)·(3 + 7x) = 6 + 14x + 15x + 35x²
+                    = 6 + 29x + 35x²
+
+Apply x² = -1 (ring reduction):
+                    = 6 + 29x - 35
+                    = -29 + 29x
+
+Add s[0] = 3:
+  B₀(x) = -29 + 29x + 3 = -26 + 29x = 71 + 29x  (mod 97)
+
+Helper 0: KS₀ = (A₀, B₀) = (2 + 5x, 71 + 29x)
+```
+
+**Helper for s[1] = 7:**
+```
+Pick random A₁(x) = 6 + 2x
+
+Compute B₁(x) = A₁(x)·S(x) + s[1]
+             = (6 + 2x)·(3 + 7x) + 7
+
+Expand:
+  (6 + 2x)·(3 + 7x) = 18 + 42x + 6x + 14x²
+                    = 18 + 48x + 14·(-1)
+                    = 18 + 48x - 14
+                    = 4 + 48x
+
+Add s[1] = 7:
+  B₁(x) = 4 + 48x + 7 = 11 + 48x
+
+Helper 1: KS₁ = (A₁, B₁) = (6 + 2x, 11 + 48x)
+```
+
+**The client sends KS₀ and KS₁ to the server (this is the "key switching key").**
+
+### Step 2: Server Performs Key Switch
+
+The server has:
+- LWE ciphertext: `(a, c) = ([11, 4], 66)`
+- Helper keys: `KS₀ = (2 + 5x, 71 + 29x)` and `KS₁ = (6 + 2x, 11 + 48x)`
+
+**Server computes the output RLWE ciphertext:**
+
+```
+A'(x) = a[0]·A₀(x) + a[1]·A₁(x)
+      = 11·(2 + 5x) + 4·(6 + 2x)
+      = (22 + 55x) + (24 + 8x)
+      = 46 + 63x
+
+C'(x) = c - a[0]·B₀(x) - a[1]·B₁(x)
+      = 66 - 11·(71 + 29x) - 4·(11 + 48x)
+      = 66 - (781 + 319x) - (44 + 192x)
+      = 66 - 781 - 44 - (319 + 192)x
+      = -759 - 511x
+      = 17 + 71x  (mod 97)
+```
+
+**Output RLWE ciphertext: (A', C') = (46 + 63x, 17 + 71x)**
+
+### Step 3: Client Decrypts RLWE
+
+The client decrypts using the formula: `C'(x) + A'(x)·S(x)`
+
+```
+First compute A'(x)·S(x):
+  (46 + 63x)·(3 + 7x) = 138 + 322x + 189x + 441x²
+                      = 138 + 511x + 441·(-1)
+                      = 138 + 511x - 441
+                      = -303 + 511x
+                      = 85 + 26x  (mod 97)
+
+Now add C'(x):
+  C'(x) + A'(x)·S(x) = (17 + 71x) + (85 + 26x)
+                     = 102 + 97x
+                     = 5 + 0x  (mod 97)
+                     = 5  ✓
+```
+
+**We recovered the original message μ = 5!**
+
+### Why It Works: The Algebra
+
+Let's trace through why the math works out:
+
+```
+C' + A'·S 
+= [c - a[0]·B₀ - a[1]·B₁] + [a[0]·A₀ + a[1]·A₁]·S
+
+Rearrange:
+= c - a[0]·B₀ - a[1]·B₁ + a[0]·A₀·S + a[1]·A₁·S
+= c - a[0]·(B₀ - A₀·S) - a[1]·(B₁ - A₁·S)
+
+Recall how we constructed B_i:
+  B_i = A_i·S + s[i]
+  So: B_i - A_i·S = s[i]
+
+Substitute:
+= c - a[0]·s[0] - a[1]·s[1]
+= c - ⟨a, s⟩
+= μ  ✓
+```
+
+The key switching keys encode the secret in a way that lets the server "cancel out" the LWE inner product term.
+
+### Summary Table
+
+| Step | Who | What | Data |
+|------|-----|------|------|
+| 1 | Client | Create RLWE encryptions of each s[i] | KS₀, KS₁, ..., KS_{d-1} |
+| 2 | Client | Send key switching keys to server | (this increases query size) |
+| 3 | Server | Receive arbitrary LWE ciphertext | (a, c) |
+| 4 | Server | Compute weighted sum of KS keys | A' = Σ a[i]·KS_i.A |
+| 5 | Server | Compute C' component | C' = c - Σ a[i]·KS_i.B |
+| 6 | Server | Output RLWE ciphertext | (A', C') |
+| 7 | Client | Decrypt using ring secret S | μ = C' + A'·S |
+
+### The Noise Problem and Gadget Decomposition
+
+In the example above, we multiplied RLWE ciphertexts by scalars like a[0] = 11.
+
+**Problem**: In real crypto, a[i] can be as large as q (e.g., 2³²). RLWE ciphertexts contain noise, and multiplying by 2³² amplifies the noise by 2³² → **destroys the ciphertext**.
+
+**Solution: Gadget Decomposition**
+
+Instead of one helper per position, create helpers for each "digit" of the scalar.
+
+Pick base B = 256. Any number v can be written as:
+```
+v = v⁽⁰⁾ + v⁽¹⁾·256 + v⁽²⁾·256² + v⁽³⁾·256³
+```
+where each v⁽ℓ⁾ ∈ {0, 1, ..., 255} is small.
+
+Pre-compute helpers for each digit position:
+```
+KS[i][0] = RLWE.Enc(s[i] · 1)
+KS[i][1] = RLWE.Enc(s[i] · 256)
+KS[i][2] = RLWE.Enc(s[i] · 256²)
+KS[i][3] = RLWE.Enc(s[i] · 256³)
+```
+
+The server decomposes a[i] into digits and computes:
+```
+Σ_ℓ a[i]⁽ℓ⁾ · KS[i][ℓ]
+```
+
+Now we only multiply by small numbers (0-255), keeping noise under control.
+
+### Size of Key Switching Material
+
+This is why YPIR queries are larger than SimplePIR/DoublePIR:
+
+```
+For d positions × k digits per scalar:
+  Total KS entries: d × k RLWE ciphertexts
+  Each RLWE ciphertext: 2d coefficients
+  
+  Total size: O(d² · k) coefficients
+```
+
+For typical parameters (d ≈ 2048, k ≈ 4), this is several megabytes of key material that must be included in the query.
+
+### Packing Multiple LWE Ciphertexts
+
+To pack d LWE ciphertexts into different "slots" of an RLWE ciphertext, we need key switching keys for each target slot j:
+
+```
+For slot j, we need KS_j[i] = RLWE.Enc(s[i] · x^j)
+```
+
+This places the message in the coefficient of x^j in the output polynomial.
+
+The full packing procedure:
+```
+result = (0, 0)  // zero RLWE ciphertext
+
+for j in 0..d:
+    // Pack the j-th LWE ciphertext into slot j
+    (a_j, c_j) = LWE_ciphertexts[j]
+    
+    // Key switch using slot-j keys
+    A' += Σ_i a_j[i] · KS_j[i].A
+    C' += c_j · x^j - Σ_i a_j[i] · KS_j[i].B
+
+return (A', C')
+```
+
+The result decrypts to μ₀ + μ₁x + μ₂x² + ... + μ_{d-1}x^{d-1}, with all messages packed into one ciphertext.
