@@ -16,6 +16,7 @@
 
 use rand::Rng;
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     matrix_database::DoublePirDatabase,
@@ -40,7 +41,7 @@ impl PirProtocol for DoublePir {
 }
 
 /// DoublePIR query: two encrypted unit vectors
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct DoublePirQuery {
     /// First query: selects column (√N elements)
     pub query_col: Vec<u32>,
@@ -49,13 +50,13 @@ pub struct DoublePirQuery {
 }
 
 /// DoublePIR answer: compressed result
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct DoublePirAnswer {
     /// Encrypted record bytes (record_size elements)
     pub data: Vec<u32>,
 }
 
-/// Client state for DoublePIR recovery
+/// Client state for DoublePIR recovery (kept secret, not transmitted)
 pub struct DoublePirQueryState {
     /// Column index being queried
     pub col_idx: usize,
@@ -68,6 +69,7 @@ pub struct DoublePirQueryState {
 }
 
 /// Setup data sent from server to client
+#[derive(Clone, Serialize, Deserialize)]
 pub struct DoublePirSetup {
     /// Seed for first matrix A₁ (column selection)
     pub seed_col: MatrixSeed,
@@ -1051,6 +1053,151 @@ mod tests {
             query_row: vec![0u32; 5], // Wrong size (should be 3)
         };
         let _answer = server.answer(&bad_query);
+    }
+
+    // ========================================================================
+    // Serialization Tests
+    // ========================================================================
+
+    #[test]
+    fn test_double_pir_query_serialization() {
+        let query = DoublePirQuery {
+            query_col: vec![1, 2, 3, 4, 5],
+            query_row: vec![10, 20, 30],
+        };
+        let encoded = bincode::serialize(&query).unwrap();
+        let decoded: DoublePirQuery = bincode::deserialize(&encoded).unwrap();
+        assert_eq!(query.query_col, decoded.query_col);
+        assert_eq!(query.query_row, decoded.query_row);
+    }
+
+    #[test]
+    fn test_double_pir_answer_serialization() {
+        let answer = DoublePirAnswer {
+            data: vec![100, 200, 300, 400],
+        };
+        let encoded = bincode::serialize(&answer).unwrap();
+        let decoded: DoublePirAnswer = bincode::deserialize(&encoded).unwrap();
+        assert_eq!(answer.data, decoded.data);
+    }
+
+    #[test]
+    fn test_double_pir_setup_serialization() {
+        let records = create_test_records(9, 2);
+        let record_refs: Vec<&[u8]> = records.iter().map(|r| r.as_slice()).collect();
+        let db = DoublePirDatabase::new(&record_refs, 2);
+
+        let params = LweParams {
+            n: 64,
+            p: 256,
+            noise_stddev: 0.0,
+        };
+        let mut rng = rand::rng();
+
+        let server = DoublePirServer::new(db, &params, &mut rng);
+        let setup = server.setup();
+
+        // Serialize and deserialize
+        let encoded = bincode::serialize(&setup).unwrap();
+        let decoded: DoublePirSetup = bincode::deserialize(&encoded).unwrap();
+
+        // Verify all fields
+        assert_eq!(setup.seed_col, decoded.seed_col);
+        assert_eq!(setup.seed_row, decoded.seed_row);
+        assert_eq!(setup.hint_col.data, decoded.hint_col.data);
+        assert_eq!(setup.hint_row.data, decoded.hint_row.data);
+        assert_eq!(setup.hint_cross, decoded.hint_cross);
+        assert_eq!(setup.num_cols, decoded.num_cols);
+        assert_eq!(setup.num_rows, decoded.num_rows);
+        assert_eq!(setup.record_size, decoded.record_size);
+        assert_eq!(setup.num_records, decoded.num_records);
+        assert_eq!(setup.lwe_dim, decoded.lwe_dim);
+    }
+
+    #[test]
+    fn test_double_pir_end_to_end_with_serialization() {
+        // Test full protocol with serialization at each step
+        let records = create_test_records(9, 2);
+        let record_refs: Vec<&[u8]> = records.iter().map(|r| r.as_slice()).collect();
+        let db = DoublePirDatabase::new(&record_refs, 2);
+
+        let params = LweParams {
+            n: 64,
+            p: 256,
+            noise_stddev: 0.0,
+        };
+        let mut rng = rand::rng();
+
+        // Server creates setup
+        let server = DoublePirServer::new(db, &params, &mut rng);
+        let setup = server.setup();
+
+        // Simulate network: serialize setup
+        let setup_bytes = bincode::serialize(&setup).unwrap();
+        let setup_received: DoublePirSetup = bincode::deserialize(&setup_bytes).unwrap();
+
+        // Client creates query
+        let client = DoublePirClient::new(setup_received, params);
+        let target_idx = 4;
+        let (state, query) = client.query(target_idx, &mut rng);
+
+        // Simulate network: serialize query
+        let query_bytes = bincode::serialize(&query).unwrap();
+        let query_received: DoublePirQuery = bincode::deserialize(&query_bytes).unwrap();
+
+        // Server answers
+        let answer = server.answer(&query_received);
+
+        // Simulate network: serialize answer
+        let answer_bytes = bincode::serialize(&answer).unwrap();
+        let answer_received: DoublePirAnswer = bincode::deserialize(&answer_bytes).unwrap();
+
+        // Client recovers
+        let recovered = client.recover(&state, &answer_received);
+
+        assert_eq!(recovered, records[target_idx]);
+    }
+
+    #[test]
+    fn test_serialization_sizes_match_communication_cost() {
+        let records = create_test_records(100, 32);
+        let record_refs: Vec<&[u8]> = records.iter().map(|r| r.as_slice()).collect();
+        let db = DoublePirDatabase::new(&record_refs, 32);
+
+        let params = LweParams {
+            n: 64,
+            p: 256,
+            noise_stddev: 0.0,
+        };
+        let mut rng = rand::rng();
+
+        let server = DoublePirServer::new(db, &params, &mut rng);
+        let setup = server.setup();
+        let client = DoublePirClient::new(setup.clone(), params);
+
+        let (_state, query) = client.query(50, &mut rng);
+        let answer = server.answer(&query);
+
+        // Check that serialized sizes roughly match CommunicationCost estimates
+        let query_bytes = bincode::serialize(&query).unwrap();
+        let answer_bytes = bincode::serialize(&answer).unwrap();
+        let setup_bytes = bincode::serialize(&setup).unwrap();
+
+        // The CommunicationCost trait gives the data payload size
+        // bincode adds a small overhead (8 bytes per Vec for length prefix)
+        let query_cost = query.size_bytes();
+        let answer_cost = answer.size_bytes();
+        let setup_cost = setup.size_bytes();
+
+        // Serialized size should be close to estimated cost (within 5% for large messages)
+        println!("Query: serialized={}, estimated={}", query_bytes.len(), query_cost);
+        println!("Answer: serialized={}, estimated={}", answer_bytes.len(), answer_cost);
+        println!("Setup: serialized={}, estimated={}", setup_bytes.len(), setup_cost);
+
+        // Allow some overhead for bincode length prefixes
+        assert!(query_bytes.len() <= query_cost + 32);
+        assert!(answer_bytes.len() <= answer_cost + 16);
+        assert!(setup_bytes.len() <= setup_cost + 128);
     }
 }
 
