@@ -1,0 +1,50 @@
+name: Sync HIBP Data
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    # Allow manual trigger
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download HIBP data
+        run: |
+          cd password-demo/scripts
+          chmod +x download-hibp.sh
+          ./download-hibp.sh
+        timeout-minutes: 60
+
+      - name: Trigger Railway redeploy
+        if: success()
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
+          RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
+        run: |
+          if [ -n "$RAILWAY_TOKEN" ]; then
+            curl -X POST \
+              -H "Authorization: Bearer $RAILWAY_TOKEN" \
+              -H "Content-Type: application/json" \
+              "https://backboard.railway.app/graphql/v2" \
+              -d '{
+                "query": "mutation { serviceInstanceRedeploy(serviceId: \"'$RAILWAY_SERVICE_ID'\", environmentId: null) }"
+              }'
+          else
+            echo "RAILWAY_TOKEN not set, skipping redeploy trigger"
+          fi
+
+      - name: Upload data artifact (for manual deployment)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hibp-data
+          path: password-demo/data/ranges/
+          retention-days: 1
+

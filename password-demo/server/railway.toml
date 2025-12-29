@@ -1,0 +1,13 @@
+[build]
+builder = "dockerfile"
+dockerfilePath = "./Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
+
+# Note: You'll need to set up a volume mount for /app/data/ranges
+# and either pre-populate it or add a startup script to download data
+
