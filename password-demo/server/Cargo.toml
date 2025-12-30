@@ -21,8 +21,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # HIBP library (from public GitHub repo)
 hibp = { git = "https://github.com/p0mvn/pir.git", branch = "main" }
 
-# PIR library (from public GitHub repo)
-pir = { git = "https://github.com/p0mvn/pir.git", branch = "main" }
+# PIR library (from public GitHub repo, main branch @ 152a8ee)
+pir = { git = "https://github.com/p0mvn/pir.git", rev = "152a8ee3b253a7369ec0fbcb2bc08d1d184f443e" }
 
 # Random number generation
 rand = "0.9"
