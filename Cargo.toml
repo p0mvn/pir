@@ -3,5 +3,6 @@ members = [
     "pir",
     "password-demo/hibp",
     "password-demo/server",
+    "password-demo/pir-wasm",
 ]
 resolver = "2"

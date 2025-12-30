@@ -187,6 +187,11 @@ impl PasswordChecker {
             }
         }
     }
+    
+    /// Get a reference to the in-memory cache (if loaded)
+    pub fn get_cache(&self) -> Option<&HashMap<String, HashMap<String, u32>>> {
+        self.cache.as_ref()
+    }
 }
 
 /// Statistics about the password checker

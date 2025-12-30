@@ -594,5 +594,157 @@ mod tests {
         assert!(answer_bytes.len() <= answer_cost + 16);
         assert!(setup_bytes.len() <= setup_cost + 128);
     }
+
+    /// Test end-to-end with JSON serialization (like WASM does)
+    #[test]
+    fn test_double_pir_json_serialization() {
+        let records = create_test_records(9, 2);
+        let record_refs: Vec<&[u8]> = records.iter().map(|r| r.as_slice()).collect();
+        let db = DoublePirDatabase::new(&record_refs, 2);
+
+        let params = LweParams {
+            n: 64,
+            p: 256,
+            noise_stddev: 0.0,
+        };
+        let mut rng = rand::rng();
+
+        let server = DoublePirServer::new(db, &params, &mut rng);
+        let setup = server.setup();
+
+        // Simulate JSON serialization/deserialization like WASM does
+        let setup_json = serde_json::to_string(&setup).unwrap();
+        println!("Setup JSON length: {} bytes", setup_json.len());
+        let setup_received: crate::double::DoublePirSetup = serde_json::from_str(&setup_json).unwrap();
+
+        // Client creates query
+        let client = DoublePirClient::new(setup_received, params);
+        let target_idx = 4;
+        let (state, query) = client.query(target_idx, &mut rng);
+
+        // Serialize query via JSON
+        let query_json = serde_json::to_string(&query).unwrap();
+        let query_received: DoublePirQuery = serde_json::from_str(&query_json).unwrap();
+
+        // Server answers
+        let answer = server.answer(&query_received);
+
+        // Serialize answer via JSON
+        let answer_json = serde_json::to_string(&answer).unwrap();
+        println!("Answer JSON: {}", answer_json);
+        let answer_received: crate::double::DoublePirAnswer = serde_json::from_str(&answer_json).unwrap();
+
+        // Client recovers
+        let recovered = client.recover(&state, &answer_received);
+        
+        println!("Expected: {:?}", records[target_idx]);
+        println!("Recovered: {:?}", recovered);
+
+        assert_eq!(recovered, records[target_idx]);
+    }
+
+    /// Test that A matrices from seed are consistent
+    #[test]
+    fn test_a_matrix_from_specific_seed() {
+        // Use the same seed as the demo server
+        let seed_col: [u8; 32] = [
+            26, 233, 94, 103, 221, 251, 149, 36, 32, 7, 43, 22, 27, 35, 28, 49,
+            183, 63, 181, 37, 128, 126, 176, 0, 102, 94, 118, 43, 56, 23, 99, 36
+        ];
+        let a_col = LweMatrix::from_seed(&seed_col, 20, 64);
+        
+        println!("A_col first 8 elements: {:?}", &a_col.data[..8]);
+        
+        // These values should match what WASM generates
+        assert!(a_col.data.len() == 20 * 64);
+    }
+
+    /// Test simulating the password demo scenario
+    #[test]
+    fn test_password_demo_scenario() {
+        use crate::binary_fuse::{BinaryFuseFilter, KeywordQuery};
+
+        // Create demo database same as the server
+        let database: Vec<(String, Vec<u8>)> = (0..200)
+            .map(|i| {
+                let key = format!("password_{:04}", i);
+                let count = ((i + 1) * 100) as u32;
+                let value = count.to_le_bytes().to_vec();
+                (key, value)
+            })
+            .collect();
+
+        let value_size = 4;
+        let filter = BinaryFuseFilter::build(&database, value_size)
+            .expect("Failed to build Binary Fuse Filter");
+
+        println!("Filter size: {} slots", filter.filter_size());
+
+        let pir_records = filter.to_pir_records();
+        let record_refs: Vec<&[u8]> = pir_records.iter().map(|r| r.as_slice()).collect();
+        let db = DoublePirDatabase::new(&record_refs, value_size);
+
+        let params = LweParams {
+            n: 64,
+            p: 256,
+            noise_stddev: 0.0,
+        };
+        let mut rng = rand::rng();
+
+        let server = DoublePirServer::new(db, &params, &mut rng);
+        let setup = server.setup();
+        
+        println!("Seeds: col={:?}, row={:?}", 
+            &setup.seed_col[..8], &setup.seed_row[..8]);
+        println!("Grid: {}x{}, records={}", setup.num_cols, setup.num_rows, setup.num_records);
+
+        // Simulate JSON serialization like WASM
+        let setup_json = serde_json::to_string(&setup).unwrap();
+        let setup_received: crate::double::DoublePirSetup = serde_json::from_str(&setup_json).unwrap();
+
+        let client = DoublePirClient::new(setup_received, params);
+
+        // Query for password_0042
+        let keyword = "password_0042".to_string();
+        let kw_query = KeywordQuery::new(&filter.params(), &keyword);
+        let positions = kw_query.record_indices();
+        println!("Keyword '{}' positions: {:?}", keyword, positions);
+
+        let expected_value = 43 * 100; // (42 + 1) * 100 = 4300
+        println!("Expected value: {} = {:?}", expected_value, (expected_value as u32).to_le_bytes());
+
+        // Query each position
+        let mut recovered_records = Vec::new();
+        for (i, &pos) in positions.iter().enumerate() {
+            let (state, query) = client.query(pos, &mut rng);
+            
+            // JSON round-trip the query
+            let query_json = serde_json::to_string(&query).unwrap();
+            let query_received: DoublePirQuery = serde_json::from_str(&query_json).unwrap();
+            
+            let answer = server.answer(&query_received);
+            
+            // JSON round-trip the answer
+            let answer_json = serde_json::to_string(&answer).unwrap();
+            let answer_received: crate::double::DoublePirAnswer = serde_json::from_str(&answer_json).unwrap();
+            
+            let recovered = client.recover(&state, &answer_received);
+            println!("Position {} (col={}, row={}): answer={:?}, recovered={:?}",
+                pos, state.col_idx, state.row_idx, answer.data, recovered);
+            recovered_records.push(recovered);
+        }
+
+        // XOR the three records
+        let final_result: Vec<u8> = recovered_records[0].iter()
+            .zip(recovered_records[1].iter())
+            .zip(recovered_records[2].iter())
+            .map(|((&a, &b), &c)| a ^ b ^ c)
+            .collect();
+
+        let result_value = u32::from_le_bytes([final_result[0], final_result[1], final_result[2], final_result[3]]);
+        println!("Final XOR result: {:?} = {}", final_result, result_value);
+        
+        assert_eq!(result_value, expected_value, "Recovered value should match expected");
+    }
 }
 
