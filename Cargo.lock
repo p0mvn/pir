@@ -656,13 +656,11 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "dotenvy",
- "hex",
  "hibp 0.1.0 (git+https://github.com/p0mvn/pir.git?branch=main)",
  "pir 0.1.0 (git+https://github.com/p0mvn/pir.git?branch=main)",
  "rand",
  "serde",
  "serde_json",
- "sha1",
  "tokio",
  "tower-http",
  "tracing",

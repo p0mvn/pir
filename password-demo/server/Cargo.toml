@@ -27,7 +27,4 @@ pir = { git = "https://github.com/p0mvn/pir.git", branch = "main" }
 # Random number generation
 rand = "0.9"
 
-# Utils
-sha1 = "0.10"
-hex = "0.4"
 dotenvy = "0.15"

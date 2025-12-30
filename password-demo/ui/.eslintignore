@@ -1,0 +1,7 @@
+# Generated artifacts
+lib/pir_wasm.js
+
+# Next build output
+.next/
+out/
+

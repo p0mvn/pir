@@ -324,142 +324,22 @@ async fn pir_query(
     }))
 }
 
-/// Debug endpoint to get A matrix data
-#[derive(Debug, Serialize)]
-struct PirDebugResponse {
-    a_col_data: Vec<u32>,
-    a_row_data: Vec<u32>,
-    seed_col: Vec<u8>,
-    seed_row: Vec<u8>,
-}
-
-async fn pir_debug(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<PirDebugResponse>, (StatusCode, String)> {
-    let pir_server = state.pir_server.as_ref().ok_or((
-        StatusCode::SERVICE_UNAVAILABLE,
-        "PIR not initialized".to_string(),
-    ))?;
-
-    let setup = pir_server.setup();
-    
-    // Generate A matrices from the same seeds
-    let a_col = pir::pir::LweMatrix::from_seed(&setup.seed_col, setup.num_cols, setup.lwe_dim);
-    let a_row = pir::pir::LweMatrix::from_seed(&setup.seed_row, setup.num_rows, setup.lwe_dim);
-
-    Ok(Json(PirDebugResponse {
-        a_col_data: a_col.data.iter().take(16).cloned().collect(),
-        a_row_data: a_row.data.iter().take(16).cloned().collect(),
-        seed_col: setup.seed_col.to_vec(),
-        seed_row: setup.seed_row.to_vec(),
-    }))
-}
-
-/// Debug endpoint for end-to-end PIR test on server side
-#[derive(Debug, Deserialize)]
-struct PirTestRequest {
-    record_idx: usize,
-}
-
-#[derive(Debug, Serialize)]
-struct PirTestResponse {
-    record_idx: usize,
-    col_idx: usize,
-    row_idx: usize,
-    answer: Vec<u32>,
-    server_recovered: Vec<u8>,
-    query_col_len: usize,
-    query_row_len: usize,
-    secret_col_first4: Vec<u32>,
-    secret_row_first4: Vec<u32>,
-}
-
-/// Debug endpoint to get keyword positions
-#[derive(Debug, Deserialize)]
-struct KeywordPositionsRequest {
-    keyword: String,
-}
-
-#[derive(Debug, Serialize)]
-struct KeywordPositionsResponse {
-    keyword: String,
-    positions: Vec<usize>,
-    filter_seed: u64,
-}
-
-async fn pir_test(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<PirTestRequest>,
-) -> Result<Json<PirTestResponse>, (StatusCode, String)> {
-    use pir::double::DoublePirClient;
-    
-    let pir_server = state.pir_server.as_ref().ok_or((
-        StatusCode::SERVICE_UNAVAILABLE,
-        "PIR not initialized".to_string(),
-    ))?;
-    
-    let lwe_params = state.lwe_params.as_ref().ok_or((
-        StatusCode::SERVICE_UNAVAILABLE,
-        "LWE params not available".to_string(),
-    ))?;
-    
-    let setup = pir_server.setup();
-    let client = DoublePirClient::new(setup, *lwe_params);
-    
-    let mut rng = rand::rng();
-    let (query_state, query) = client.query(payload.record_idx, &mut rng);
-    
-    let answer = pir_server.answer(&query);
-    let recovered = client.recover(&query_state, &answer);
-    
-    Ok(Json(PirTestResponse {
-        record_idx: payload.record_idx,
-        col_idx: query_state.col_idx,
-        row_idx: query_state.row_idx,
-        answer: answer.data.clone(),
-        server_recovered: recovered,
-        query_col_len: query.query_col.len(),
-        query_row_len: query.query_row.len(),
-        secret_col_first4: query_state.secret_col.iter().take(4).cloned().collect(),
-        secret_row_first4: query_state.secret_row.iter().take(4).cloned().collect(),
-    }))
-}
-
-async fn pir_keyword_positions(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<KeywordPositionsRequest>,
-) -> Result<Json<KeywordPositionsResponse>, (StatusCode, String)> {
-    use pir::binary_fuse::KeywordQuery;
-    
-    let filter_params = state.filter_params.as_ref().ok_or((
-        StatusCode::SERVICE_UNAVAILABLE,
-        "Filter params not available".to_string(),
-    ))?;
-    
-    let kw_query = KeywordQuery::new(filter_params, &payload.keyword);
-    let positions = kw_query.record_indices();
-    
-    Ok(Json(KeywordPositionsResponse {
-        keyword: payload.keyword,
-        positions: positions.to_vec(),
-        filter_seed: filter_params.seed,
-    }))
-}
-
 // ============================================================================
 // PIR Demo Database
 // ============================================================================
 
 /// Create a demo database for PIR using real HIBP data
-fn create_pir_demo_database(checker: &PasswordChecker) -> (BinaryFuseFilter, DoublePirDatabase, LweParams) {
+fn create_pir_demo_database(
+    checker: &PasswordChecker,
+) -> (BinaryFuseFilter, DoublePirDatabase, LweParams) {
     info!("Creating PIR demo database from real HIBP data...");
 
     // Get real HIBP data from the loaded cache
     // We use the full SHA-1 hash as the key (prefix + suffix)
     let mut database: Vec<(String, Vec<u8>)> = Vec::new();
-    
+
     if let Some(cache) = checker.get_cache() {
-        // First pass: collect high-breach-count hashes as samples
+        // Collect a small, deterministic subset of records for the demo
         let mut all_entries: Vec<(String, u32)> = Vec::new();
         for (prefix, range_data) in cache.iter() {
             for (suffix, &count) in range_data.iter() {
@@ -467,24 +347,18 @@ fn create_pir_demo_database(checker: &PasswordChecker) -> (BinaryFuseFilter, Dou
                 all_entries.push((full_hash, count));
             }
         }
-        
+
         // Sort by count descending to get most-breached passwords
         all_entries.sort_by(|a, b| b.1.cmp(&a.1));
-        
+
         // Take top 200 entries
         let selected: Vec<_> = all_entries.into_iter().take(200).collect();
-        
-        // Log top 5 for testing
-        info!("Top 5 hashes by breach count (use these for testing):");
-        for (hash, count) in selected.iter().take(5) {
-            info!("  {}: {} breaches", hash, count);
-        }
-        
+
         for (hash, count) in selected {
             let value = count.to_le_bytes().to_vec();
             database.push((hash, value));
         }
-        
+
         info!("Loaded {} real HIBP entries for PIR demo", database.len());
     }
 
@@ -567,7 +441,10 @@ async fn main() {
 
     info!("Starting HIBP server...");
     info!("Port: {}", port);
-    info!("PIR demo: {}", if pir_enabled { "enabled" } else { "disabled" });
+    info!(
+        "PIR demo: {}",
+        if pir_enabled { "enabled" } else { "disabled" }
+    );
 
     let checker = if let Some(size_str) = download_on_start {
         // Download data directly to memory on startup
@@ -584,8 +461,14 @@ async fn main() {
 
         info!("==============================================");
         info!("HIBP_DOWNLOAD_ON_START={}", size_str);
-        info!("Downloading {} dataset from HaveIBeenPwned API...", size.description());
-        info!("This will download {} ranges directly into memory", size.range_count());
+        info!(
+            "Downloading {} dataset from HaveIBeenPwned API...",
+            size.description()
+        );
+        info!(
+            "This will download {} ranges directly into memory",
+            size.range_count()
+        );
         info!("==============================================");
 
         let start = Instant::now();
@@ -612,7 +495,8 @@ async fn main() {
         }
     } else {
         // Load from local files (default behavior)
-        let data_dir = std::env::var("HIBP_DATA_DIR").unwrap_or_else(|_| "./data/ranges".to_string());
+        let data_dir =
+            std::env::var("HIBP_DATA_DIR").unwrap_or_else(|_| "./data/ranges".to_string());
         let load_into_memory = std::env::var("HIBP_MEMORY_MODE")
             .map(|v| v == "1" || v.to_lowercase() == "true")
             .unwrap_or(true);
@@ -660,7 +544,7 @@ async fn main() {
         let (filter, db, params) = create_pir_demo_database(&checker);
         let mut rng = rand::rng();
         let server = DoublePirServer::new(db, &params, &mut rng);
-        
+
         info!("PIR server initialized:");
         info!("  Records: {}", server.num_records());
         info!("  Record size: {} bytes", server.record_size());
@@ -684,9 +568,6 @@ async fn main() {
         .route("/check", post(check))
         .route("/pir/setup", get(pir_setup))
         .route("/pir/query", post(pir_query))
-        .route("/pir/debug", get(pir_debug))
-        .route("/pir/test", post(pir_test))
-        .route("/pir/keyword_positions", post(pir_keyword_positions))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state);

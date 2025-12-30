@@ -7,7 +7,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 // ============================================================================
 
 interface BinaryFuseParams {
-  seed: number;
+  seed: string;
   segment_size: number;
   filter_size: number;
   value_size: number;
@@ -91,7 +91,6 @@ export default function Home() {
   
   // WASM client ref
   const pirClientRef = useRef<PirClientWasm | null>(null);
-  const setupRef = useRef<PirSetupResponse | null>(null);
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
@@ -123,7 +122,6 @@ export default function Home() {
         }
         
         const setupData: PirSetupResponse = await setupResponse.json();
-        setupRef.current = setupData;
         
         // Create PIR client
         const client = new wasmModule.PirClient(
