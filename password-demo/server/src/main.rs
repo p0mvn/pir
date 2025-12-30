@@ -36,7 +36,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use hibp::{DownloadSize, InMemoryDownloader, PasswordChecker};
+use hibp::{CompactChecker, CompactDownloader, DownloadSize, PasswordChecker};
 use pir::binary_fuse::{BinaryFuseFilter, BinaryFuseParams};
 use pir::double::{DoublePirAnswer, DoublePirQuery, DoublePirServer, DoublePirSetup};
 use pir::matrix_database::DoublePirDatabase;
@@ -51,9 +51,33 @@ use tracing::{error, info, warn};
 // Application State
 // ============================================================================
 
+/// Wrapper enum to support both checker types
+enum Checker {
+    /// Standard checker (file-based or old in-memory format)
+    Standard(PasswordChecker),
+    /// Compact checker (memory-efficient binary format)
+    Compact(CompactChecker),
+}
+
+impl Checker {
+    fn check_hash(&self, hash: &str) -> Result<Option<u32>, hibp::Error> {
+        match self {
+            Checker::Standard(c) => c.check_hash(hash),
+            Checker::Compact(c) => c.check_hash(hash),
+        }
+    }
+
+    fn stats(&self) -> hibp::CheckerStats {
+        match self {
+            Checker::Standard(c) => c.stats(),
+            Checker::Compact(c) => c.stats(),
+        }
+    }
+}
+
 /// Application state shared across all handlers
 struct AppState {
-    checker: PasswordChecker,
+    checker: Checker,
     /// DoublePIR server (initialized lazily or on startup)
     pir_server: Option<DoublePirServer>,
     /// Binary Fuse Filter parameters for client
@@ -342,9 +366,9 @@ fn create_pir_demo_database(
         // Collect a small, deterministic subset of records for the demo
         let mut all_entries: Vec<(String, u32)> = Vec::new();
         for (prefix, range_data) in cache.iter() {
-            for (suffix, &count) in range_data.iter() {
+            for (suffix, count) in range_data.iter() {
                 let full_hash = format!("{}{}", prefix, suffix);
-                all_entries.push((full_hash, count));
+                all_entries.push((full_hash, *count));
             }
         }
 
@@ -472,21 +496,24 @@ async fn main() {
         info!("==============================================");
 
         let start = Instant::now();
-        let downloader = InMemoryDownloader::new();
+        // Use CompactDownloader for memory-efficient binary format
+        // Uses ~24 bytes per entry vs ~63 bytes with old format
+        let downloader = CompactDownloader::new();
 
-        match downloader.download_to_memory(size).await {
-            Ok(cache) => {
+        match downloader.download_compact(size).await {
+            Ok(data) => {
                 let elapsed = start.elapsed();
-                let total_hashes: usize = cache.values().map(|m| m.len()).sum();
+                let total_hashes = data.len();
+                let memory_gb = data.memory_usage() as f64 / 1024.0 / 1024.0 / 1024.0;
 
                 info!("==============================================");
                 info!("Download completed successfully!");
-                info!("  Ranges: {}", cache.len());
                 info!("  Total hashes: {}", total_hashes);
+                info!("  Memory usage: {:.2} GB", memory_gb);
                 info!("  Time: {:.1}s", elapsed.as_secs_f64());
                 info!("==============================================");
 
-                PasswordChecker::from_cache(cache)
+                Checker::Compact(CompactChecker::new(data))
             }
             Err(e) => {
                 error!("Failed to download HIBP data: {}", e);
@@ -507,7 +534,7 @@ async fn main() {
 
         // Load HIBP data from files
         info!("Loading HIBP data from {}...", data_dir);
-        let checker = match PasswordChecker::from_directory(&data_dir) {
+        let password_checker = match PasswordChecker::from_directory(&data_dir) {
             Ok(c) => c,
             Err(e) => {
                 error!("Failed to load HIBP data: {}", e);
@@ -517,9 +544,9 @@ async fn main() {
         };
 
         // Optionally load into memory for faster lookups
-        if load_into_memory {
+        let password_checker = if load_into_memory {
             info!("Loading data into memory (this may take a while for full dataset)...");
-            match checker.load_into_memory() {
+            match password_checker.load_into_memory() {
                 Ok(c) => {
                     let stats = c.stats();
                     info!(
@@ -535,22 +562,33 @@ async fn main() {
             }
         } else {
             info!("Running in disk mode (slower lookups, less memory)");
-            checker
-        }
+            password_checker
+        };
+        
+        Checker::Standard(password_checker)
     };
 
-    // Initialize PIR if enabled
+    // Initialize PIR if enabled (only works with Standard checker that has cache)
     let (pir_server, filter_params, lwe_params) = if pir_enabled {
-        let (filter, db, params) = create_pir_demo_database(&checker);
-        let mut rng = rand::rng();
-        let server = DoublePirServer::new(db, &params, &mut rng);
+        match &checker {
+            Checker::Standard(password_checker) => {
+                let (filter, db, params) = create_pir_demo_database(password_checker);
+                let mut rng = rand::rng();
+                let server = DoublePirServer::new(db, &params, &mut rng);
 
-        info!("PIR server initialized:");
-        info!("  Records: {}", server.num_records());
-        info!("  Record size: {} bytes", server.record_size());
-        info!("  LWE dimension: {}", params.n);
+                info!("PIR server initialized:");
+                info!("  Records: {}", server.num_records());
+                info!("  Record size: {} bytes", server.record_size());
+                info!("  LWE dimension: {}", params.n);
 
-        (Some(server), Some(filter.params()), Some(params))
+                (Some(server), Some(filter.params()), Some(params))
+            }
+            Checker::Compact(_) => {
+                warn!("PIR not supported with compact checker (in-memory download mode)");
+                warn!("PIR requires file-based loading to access raw data");
+                (None, None, None)
+            }
+        }
     } else {
         (None, None, None)
     };
