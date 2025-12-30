@@ -338,8 +338,14 @@ impl InMemoryDownloader {
                     // Retry logic
                     let mut attempts = 0;
                     loop {
-                        match self.download_and_parse(&prefix).await {
-                            Ok((prefix, data)) => {
+                        // Wrap with explicit timeout as belt-and-suspenders
+                        let result = tokio::time::timeout(
+                            tokio::time::Duration::from_secs(60),
+                            self.download_and_parse(&prefix)
+                        ).await;
+
+                        match result {
+                            Ok(Ok((prefix, data))) => {
                                 let hash_count = data.len();
                                 {
                                     let mut cache = cache.lock().unwrap();
@@ -357,14 +363,25 @@ impl InMemoryDownloader {
                                 }
                                 break;
                             }
-                            Err(e) => {
+                            Ok(Err(e)) => {
                                 attempts += 1;
                                 if attempts >= 3 {
                                     warn!("Failed to download range {} after 3 attempts: {}", prefix, e);
                                     errors.fetch_add(1, Ordering::SeqCst);
                                     break;
                                 }
-                                tokio::time::sleep(tokio::time::Duration::from_millis(100 * attempts)).await;
+                                warn!("Retry {}/3 for range {}: {}", attempts, prefix, e);
+                                tokio::time::sleep(tokio::time::Duration::from_millis(500 * attempts)).await;
+                            }
+                            Err(_timeout) => {
+                                attempts += 1;
+                                if attempts >= 3 {
+                                    warn!("Range {} timed out after 3 attempts", prefix);
+                                    errors.fetch_add(1, Ordering::SeqCst);
+                                    break;
+                                }
+                                warn!("Timeout retry {}/3 for range {}", attempts, prefix);
+                                tokio::time::sleep(tokio::time::Duration::from_millis(500 * attempts)).await;
                             }
                         }
                     }
