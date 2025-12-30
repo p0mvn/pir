@@ -516,15 +516,16 @@ fn build_pir_from_database_fixed(
     let value_size = 4;
     
     info!("Filter construction will allocate:");
-    log_memory_gb("  keys_info (20 bytes/entry)", n * 20);
+    log_memory_gb("  positions (12 bytes/entry)", n * 12); // Optimized: no value refs stored
     log_memory_gb("  slot_key_pairs (8 bytes * 3n)", n * 3 * 8);
-    log_memory_gb("  slot_start (4 bytes * filter_size)", filter_size * 4);
+    log_memory_gb("  slot_start (8 bytes * filter_size)", filter_size * 8); // u64 for >4B indices
     log_memory_gb("  degree (4 bytes * filter_size)", filter_size * 4);
     log_memory_gb("  stack (8 bytes * n)", n * 8);
     log_memory_gb("  processed (1 byte * n)", n);
     log_memory_gb("  final data (value_size * filter_size)", filter_size * value_size);
     
-    let estimated_peak = (n * 24) + (n * 20) + (n * 3 * 8) + (filter_size * 4 * 2) + (n * 8) + n + (filter_size * value_size);
+    // Peak = database + positions + slot_key_pairs + slot_start + degree + stack + processed + queue(~degree)
+    let estimated_peak = (n * 24) + (n * 12) + (n * 3 * 8) + (filter_size * 8) + (filter_size * 4) + (n * 8) + n + (filter_size * 4);
     log_memory_gb("  ESTIMATED PEAK (all concurrent)", estimated_peak);
 
     log_checkpoint("Starting Binary Fuse Filter construction");
