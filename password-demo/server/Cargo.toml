@@ -21,11 +21,11 @@ hex = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# HIBP library (from GitHub @ 7db8346)
-hibp = { git = "https://github.com/p0mvn/pir.git", rev = "7db8346" }
+# HIBP library (from GitHub @ 8c898cf)
+hibp = { git = "https://github.com/p0mvn/pir.git", rev = "8c898cf" }
 
-# PIR library (from GitHub @ 7db8346)
-pir = { git = "https://github.com/p0mvn/pir.git", rev = "7db8346" }
+# PIR library (from GitHub @ 8c898cf)
+pir = { git = "https://github.com/p0mvn/pir.git", rev = "8c898cf" }
 
 # Random number generation
 rand = "0.9"
