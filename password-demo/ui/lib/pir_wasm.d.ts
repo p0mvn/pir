@@ -13,13 +13,29 @@ export class PirClient {
    */
   record_size(): number;
   /**
+   * Hash a password to SHA-1 (uppercase hex)
+   */
+  static hash_password(password: string): string;
+  /**
    * XOR three records to decode the final value
    */
   decode_keyword(rec0: Uint8Array, rec1: Uint8Array, rec2: Uint8Array): Uint8Array;
   /**
-   * Get the 3 record indices for a keyword query
+   * Debug: Get the first few elements of A_col matrix
+   */
+  get_a_col_data(): Uint32Array;
+  /**
+   * Debug: Get the first few elements of A_row matrix
+   */
+  get_a_row_data(): Uint32Array;
+  /**
+   * Get the 3 record indices for a keyword (hash) query
    */
   get_keyword_indices(keyword: string): Uint32Array;
+  /**
+   * Get the 3 record indices for a password (hashes it first)
+   */
+  get_password_indices(password: string): Uint32Array;
   /**
    * Create a new PIR client from setup data (JSON)
    */
@@ -50,7 +66,11 @@ export interface InitOutput {
   readonly memory: WebAssembly.Memory;
   readonly __wbg_pirclient_free: (a: number, b: number) => void;
   readonly pirclient_decode_keyword: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
+  readonly pirclient_get_a_col_data: (a: number) => [number, number];
+  readonly pirclient_get_a_row_data: (a: number) => [number, number];
   readonly pirclient_get_keyword_indices: (a: number, b: number, c: number) => [number, number];
+  readonly pirclient_get_password_indices: (a: number, b: number, c: number) => [number, number];
+  readonly pirclient_hash_password: (a: number, b: number) => [number, number];
   readonly pirclient_new: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
   readonly pirclient_num_records: (a: number) => number;
   readonly pirclient_query: (a: number, b: number) => [number, number, number, number];
