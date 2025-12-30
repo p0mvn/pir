@@ -4,8 +4,9 @@
 # In Railway: set Root Directory to "/" or leave empty, and set dockerfilePath to "password-demo/Dockerfile"
 FROM rust:1.83-slim-bookworm AS builder
 
-# Cache bust: v2 - changed build context to project root
-ARG CACHEBUST=2
+# Cache bust: force rebuild after removing conflicting railway.toml
+# Build timestamp: 2024-12-29-2150
+ARG CACHEBUST=3
 
 WORKDIR /app
 
