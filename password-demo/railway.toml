@@ -1,12 +1,6 @@
-# Railway configuration for HIBP Password Checker with PIR
-# 
-# This config uses the project root as build context so Docker can access
-# both password-demo/* and pir/* directories.
-
 [build]
 builder = "dockerfile"
-dockerfilePath = "password-demo/Dockerfile"
-watchPaths = ["password-demo/**", "pir/**"]
+dockerfilePath = "Dockerfile"
 
 [deploy]
 healthcheckPath = "/health"
@@ -21,5 +15,4 @@ restartPolicyMaxRetries = 3
 [[volumes]]
 mount = "/app/data/ranges"
 name = "hibp-data"
-
 

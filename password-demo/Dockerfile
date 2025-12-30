@@ -1,12 +1,5 @@
 # Build stage
-# NOTE: Build context must be the PROJECT ROOT (not password-demo/)
-# so that we can access both password-demo/* and pir/* directories.
-# In Railway: set Root Directory to "/" or leave empty, and set dockerfilePath to "password-demo/Dockerfile"
 FROM rust:1.83-slim-bookworm AS builder
-
-# Cache bust: force rebuild after removing conflicting railway.toml
-# Build timestamp: 2024-12-29-2150
-ARG CACHEBUST=3
 
 WORKDIR /app
 
@@ -16,13 +9,12 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy all required crates (server depends on hibp and pir via path)
-# With build context at project root:
+# Copy all required crates
 COPY pir ./pir
-COPY password-demo/hibp ./password-demo/hibp
-COPY password-demo/server ./password-demo/server
+COPY hibp ./hibp
+COPY server ./server
 
-WORKDIR /app/password-demo/server
+WORKDIR /app/server
 
 # Build release binary
 RUN cargo build --release
@@ -38,7 +30,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy binary from builder
-COPY --from=builder /app/password-demo/server/target/release/hibp-server /app/hibp-server
+COPY --from=builder /app/server/target/release/hibp-server /app/hibp-server
 
 # Create data directory (used when loading from files)
 RUN mkdir -p /app/data/ranges
@@ -58,4 +50,3 @@ ENV RUST_LOG=info
 EXPOSE 3000
 
 CMD ["/app/hibp-server"]
-
