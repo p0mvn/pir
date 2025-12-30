@@ -2,7 +2,7 @@
 name = "hibp-server"
 version = "0.1.0"
 edition = "2021"
-description = "HTTP server for HIBP password checking"
+description = "HTTP server for HIBP password checking with DoublePIR support"
 
 [dependencies]
 # Web framework
@@ -20,6 +20,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # HIBP library (local dependency)
 hibp = { path = "../hibp" }
+
+# PIR library (local dependency)
+pir = { path = "../../pir" }
+
+# Random number generation
+rand = "0.9"
 
 # Utils
 sha1 = "0.10"

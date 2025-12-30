@@ -189,8 +189,58 @@ impl BinaryFuseFilter {
         let filter_size = ARITY * segment_size;
         let segment_length_mask = (segment_size - 1) as u32;
 
-        // Try construction with different seeds
-        let mut rng = SimpleRng::new(0x517cc1b727220a95);
+        // Try construction with different seeds (using default RNG seed)
+        Self::build_with_rng_seed(pairs, value_size, segment_size, filter_size, segment_length_mask, 0x517cc1b727220a95)
+    }
+    
+    /// Build a Binary Fuse Filter with a specific RNG seed for reproducibility.
+    ///
+    /// This allows building the same filter with the same positions across server restarts.
+    pub fn build_with_seed<K: Hash + Eq + Clone>(
+        pairs: &[(K, Vec<u8>)],
+        value_size: usize,
+        rng_seed: u64,
+    ) -> Result<Self, BinaryFuseError> {
+        if pairs.is_empty() {
+            return Err(BinaryFuseError::EmptyInput);
+        }
+
+        // Validate all values have correct size
+        for (_, v) in pairs {
+            if v.len() != value_size {
+                return Err(BinaryFuseError::ValueSizeMismatch {
+                    expected: value_size,
+                    got: v.len(),
+                });
+            }
+        }
+
+        // Check for duplicate keys
+        let mut seen = HashMap::with_capacity(pairs.len());
+        for (k, _) in pairs {
+            if seen.insert(k, ()).is_some() {
+                return Err(BinaryFuseError::DuplicateKey);
+            }
+        }
+
+        let n = pairs.len();
+        let segment_size = calculate_segment_size(n);
+        let filter_size = ARITY * segment_size;
+        let segment_length_mask = (segment_size - 1) as u32;
+
+        Self::build_with_rng_seed(pairs, value_size, segment_size, filter_size, segment_length_mask, rng_seed)
+    }
+    
+    /// Internal: Try building with seeds from a specific RNG
+    fn build_with_rng_seed<K: Hash + Eq + Clone>(
+        pairs: &[(K, Vec<u8>)],
+        value_size: usize,
+        segment_size: usize,
+        filter_size: usize,
+        segment_length_mask: u32,
+        rng_seed: u64,
+    ) -> Result<Self, BinaryFuseError> {
+        let mut rng = SimpleRng::new(rng_seed);
 
         for _ in 0..MAX_ITERATIONS {
             let seed = rng.next();

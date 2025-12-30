@@ -259,6 +259,66 @@ impl DoublePirClient {
     pub fn record_size(&self) -> usize {
         self.record_size
     }
+
+    /// Debug: Get the first few elements of A_col matrix
+    pub fn get_a_col_data(&self) -> &[u32] {
+        &self.a_col.data
+    }
+
+    /// Debug: Get the first few elements of A_row matrix
+    pub fn get_a_row_data(&self) -> &[u32] {
+        &self.a_row.data
+    }
+
+    /// Debug: Get hint_col dimensions
+    pub fn hint_col_rows(&self) -> usize {
+        self.hint_col.rows
+    }
+
+    /// Debug: Get hint_row dimensions
+    pub fn hint_row_rows(&self) -> usize {
+        self.hint_row.rows
+    }
+
+    /// Debug: Get first few hint_col values
+    pub fn get_hint_col_data(&self) -> &[u32] {
+        &self.hint_col.data
+    }
+
+    /// Debug: Get hint_row data
+    pub fn get_hint_row_data(&self) -> &[u32] {
+        &self.hint_row.data
+    }
+
+    /// Debug: Get hint_cross data
+    pub fn get_hint_cross(&self) -> &[u32] {
+        &self.hint_cross
+    }
+
+    /// Debug: Get hint_col cols dimension
+    pub fn hint_col_cols(&self) -> usize {
+        self.hint_col.cols
+    }
+
+    /// Debug: Get hint_row cols dimension
+    pub fn hint_row_cols(&self) -> usize {
+        self.hint_row.cols
+    }
+
+    /// Debug: Get delta value
+    pub fn delta(&self) -> u32 {
+        self.params.delta()
+    }
+
+    /// Debug: Get n (LWE dimension)
+    pub fn lwe_n(&self) -> usize {
+        self.params.n
+    }
+
+    /// Debug: Get p (plaintext modulus)
+    pub fn lwe_p(&self) -> u32 {
+        self.params.p
+    }
 }
 
 // ============================================================================

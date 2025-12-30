@@ -6,11 +6,13 @@
 //! 3. Client generates encrypted query for a specific record
 //! 4. Server computes answer = DB · query
 //! 5. Client recovers the original record
+//!
+//! For Binary Fuse Filter + DoublePIR keyword PIR tests, see:
+//! `double_pir_binary_fuse_integration_test.rs`
 
-use pir::simple::PirClient;
 use pir::matrix_database::MatrixDatabase;
 use pir::params::LweParams;
-use pir::simple::PirServer;
+use pir::simple::{PirClient, PirServer};
 
 /// Full PIR round-trip with zero noise (deterministic)
 #[test]

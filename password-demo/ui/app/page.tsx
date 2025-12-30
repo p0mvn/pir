@@ -310,6 +310,31 @@ export default function Home() {
           </div>
         </div>
 
+        {/* PIR Demo Link */}
+        <div className="mt-12 animate-fade-in">
+          <a
+            href="/pir-demo"
+            className="inline-flex items-center gap-3 px-6 py-3 bg-gradient-to-r from-purple-600/20 to-pink-600/20 hover:from-purple-600/30 hover:to-pink-600/30 border border-purple-500/30 hover:border-purple-500/50 rounded-xl transition-all group"
+          >
+            <div className="w-10 h-10 rounded-lg bg-purple-500/20 flex items-center justify-center">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5 text-purple-400">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23.693L5 15.3m14.8 0l.853 10.66a.75.75 0 01-.22.57 3.026 3.026 0 01-1.907.84H5.474a3.025 3.025 0 01-1.907-.84.75.75 0 01-.22-.57L5 15.3" />
+              </svg>
+            </div>
+            <div className="text-left">
+              <div className="font-semibold text-white group-hover:text-purple-300 transition-colors">
+                Try DoublePIR Demo
+              </div>
+              <div className="text-xs text-gray-400">
+                Private Information Retrieval with Binary Fuse Filters
+              </div>
+            </div>
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5 text-purple-400 group-hover:translate-x-1 transition-transform">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+            </svg>
+          </a>
+        </div>
+
         {/* Attribution Footer */}
         <footer className="mt-16 text-center text-sm text-gray-500 animate-fade-in">
           <p className="mb-2">
