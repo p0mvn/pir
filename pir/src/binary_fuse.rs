@@ -172,6 +172,23 @@ impl BinaryFuseFilter {
         Self::build_internal(pairs, value_size, false, 0x517cc1b727220a95)
     }
     
+    /// Build from fixed-size value arrays - more memory efficient than Vec<u8>.
+    /// Use this when values have known fixed size (e.g., [u8; 4] for u32 counts).
+    /// Saves ~20 bytes per entry vs Vec<u8>.
+    pub fn build_from_fixed<K: Hash + Eq + Clone, const N: usize>(
+        pairs: &[(K, [u8; N])],
+    ) -> Result<Self, BinaryFuseError> {
+        Self::build_internal_fixed(pairs, N, true, 0x517cc1b727220a95)
+    }
+    
+    /// Build from fixed-size arrays without duplicate checking.
+    pub fn build_from_fixed_unchecked<K: Hash + Eq + Clone, const N: usize>(
+        pairs: &[(K, [u8; N])],
+        rng_seed: u64,
+    ) -> Result<Self, BinaryFuseError> {
+        Self::build_internal_fixed(pairs, N, false, rng_seed)
+    }
+    
     fn build_internal<K: Hash + Eq + Clone>(
         pairs: &[(K, Vec<u8>)],
         value_size: usize,
@@ -215,6 +232,35 @@ impl BinaryFuseFilter {
         Self::build_with_rng_seed(pairs, value_size, segment_size, filter_size, segment_length_mask, rng_seed)
     }
     
+    /// Internal builder for fixed-size value arrays
+    fn build_internal_fixed<K: Hash + Eq + Clone, const N: usize>(
+        pairs: &[(K, [u8; N])],
+        value_size: usize,
+        check_duplicates: bool,
+        rng_seed: u64,
+    ) -> Result<Self, BinaryFuseError> {
+        if pairs.is_empty() {
+            return Err(BinaryFuseError::EmptyInput);
+        }
+
+        // Check for duplicate keys (skip for large datasets to save memory)
+        if check_duplicates && pairs.len() < 10_000_000 {
+            let mut seen = HashMap::with_capacity(pairs.len());
+            for (k, _) in pairs {
+                if seen.insert(k, ()).is_some() {
+                    return Err(BinaryFuseError::DuplicateKey);
+                }
+            }
+        }
+
+        let n = pairs.len();
+        let segment_size = calculate_segment_size(n);
+        let filter_size = ARITY * segment_size;
+        let segment_length_mask = (segment_size - 1) as u32;
+
+        Self::build_with_rng_seed_fixed(pairs, value_size, segment_size, filter_size, segment_length_mask, rng_seed)
+    }
+    
     /// Build a Binary Fuse Filter with a specific RNG seed for reproducibility.
     ///
     /// This allows building the same filter with the same positions across server restarts.
@@ -251,6 +297,29 @@ impl BinaryFuseFilter {
             let seed = rng.next();
 
             match Self::try_build(pairs, value_size, segment_size, filter_size, segment_length_mask, seed) {
+                Ok(filter) => return Ok(filter),
+                Err(_) => continue,
+            }
+        }
+
+        Err(BinaryFuseError::ConstructionFailed)
+    }
+    
+    /// Internal: Try building with seeds for fixed-size arrays
+    fn build_with_rng_seed_fixed<K: Hash + Eq + Clone, const N: usize>(
+        pairs: &[(K, [u8; N])],
+        value_size: usize,
+        segment_size: usize,
+        filter_size: usize,
+        segment_length_mask: u32,
+        rng_seed: u64,
+    ) -> Result<Self, BinaryFuseError> {
+        let mut rng = SimpleRng::new(rng_seed);
+
+        for _ in 0..MAX_ITERATIONS {
+            let seed = rng.next();
+
+            match Self::try_build_fixed(pairs, value_size, segment_size, filter_size, segment_length_mask, seed) {
                 Ok(filter) => return Ok(filter),
                 Err(_) => continue,
             }
@@ -417,6 +486,124 @@ impl BinaryFuseFilter {
             seed,
             segment_length_mask,
             num_entries: n,
+        })
+    }
+    
+    /// Build filter from fixed-size value arrays - avoids Vec allocation overhead
+    fn try_build_fixed<K: Hash + Eq + Clone, const N: usize>(
+        pairs: &[(K, [u8; N])],
+        value_size: usize,
+        segment_size: usize,
+        filter_size: usize,
+        segment_length_mask: u32,
+        seed: u64,
+    ) -> Result<Self, BinaryFuseError> {
+        let n = pairs.len();
+
+        // Compute fingerprints and positions for all keys
+        let mut keys_info: Vec<(u64, [u32; 3], &[u8])> = Vec::with_capacity(n);
+        for (key, value) in pairs {
+            let hash = hash_key(key, seed);
+            let positions = compute_positions(hash, segment_size, segment_length_mask);
+            keys_info.push((hash, [positions[0] as u32, positions[1] as u32, positions[2] as u32], value.as_slice()));
+        }
+
+        // Build degree counters
+        let mut degree = vec![0u32; filter_size];
+        for (_, positions, _) in keys_info.iter() {
+            for &pos in positions {
+                degree[pos as usize] += 1;
+            }
+        }
+
+        // Build flat sorted array of (slot, key_idx)
+        let mut slot_key_pairs: Vec<(u32, u32)> = Vec::with_capacity(n * 3);
+        for (key_idx, (_, positions, _)) in keys_info.iter().enumerate() {
+            for &pos in positions {
+                slot_key_pairs.push((pos, key_idx as u32));
+            }
+        }
+        slot_key_pairs.sort_unstable_by_key(|&(slot, _)| slot);
+        
+        // Build index
+        let mut slot_start: Vec<u32> = vec![0; filter_size + 1];
+        {
+            let mut current_slot = 0u32;
+            for (i, &(slot, _)) in slot_key_pairs.iter().enumerate() {
+                while current_slot <= slot {
+                    slot_start[current_slot as usize] = i as u32;
+                    current_slot += 1;
+                }
+            }
+            while (current_slot as usize) <= filter_size {
+                slot_start[current_slot as usize] = slot_key_pairs.len() as u32;
+                current_slot += 1;
+            }
+        }
+
+        // Peeling
+        let mut stack: Vec<(u32, u32)> = Vec::with_capacity(n);
+        let mut processed = vec![false; n];
+        let mut queue: Vec<u32> = degree.iter().enumerate()
+            .filter(|(_, d)| **d == 1)
+            .map(|(i, _)| i as u32)
+            .collect();
+
+        while let Some(slot) = queue.pop() {
+            if degree[slot as usize] != 1 { continue; }
+
+            let start = slot_start[slot as usize] as usize;
+            let end = slot_start[slot as usize + 1] as usize;
+            
+            let key_idx = slot_key_pairs[start..end].iter()
+                .filter(|&&(s, _)| s == slot)
+                .map(|&(_, k)| k)
+                .find(|&idx| !processed[idx as usize]);
+
+            let Some(key_idx) = key_idx else { continue; };
+
+            processed[key_idx as usize] = true;
+            stack.push((key_idx, slot));
+
+            let (_, positions, _) = &keys_info[key_idx as usize];
+            for &pos in positions {
+                degree[pos as usize] = degree[pos as usize].saturating_sub(1);
+                if degree[pos as usize] == 1 { queue.push(pos); }
+            }
+        }
+
+        if stack.len() != n {
+            return Err(BinaryFuseError::ConstructionFailed);
+        }
+        
+        drop(slot_key_pairs);
+        drop(slot_start);
+        drop(degree);
+        drop(processed);
+
+        // Assign values
+        let mut data = vec![0u8; filter_size * value_size];
+
+        while let Some((key_idx, determining_slot)) = stack.pop() {
+            let (_, positions, value) = &keys_info[key_idx as usize];
+            let mut xor_value = value.to_vec();
+            let det = determining_slot as usize;
+
+            for &pos in positions {
+                let p = pos as usize;
+                if p != det {
+                    let slot_data = &data[p * value_size..(p + 1) * value_size];
+                    for (i, &b) in slot_data.iter().enumerate() {
+                        xor_value[i] ^= b;
+                    }
+                }
+            }
+
+            data[det * value_size..(det + 1) * value_size].copy_from_slice(&xor_value);
+        }
+
+        Ok(BinaryFuseFilter {
+            data, segment_size, filter_size, value_size, seed, segment_length_mask, num_entries: n,
         })
     }
 

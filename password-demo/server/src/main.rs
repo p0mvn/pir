@@ -423,6 +423,9 @@ fn create_pir_demo_database(
 /// 
 /// This takes ownership of the checker and frees its ~48 GB of data
 /// after converting to PIR format. Returns cached stats for health endpoint.
+/// 
+/// Memory optimization: Uses [u8; 20] keys directly instead of String,
+/// saving ~61 GB for the full dataset (92 bytes/entry → 24 bytes/entry).
 fn create_pir_demo_database_compact(
     checker: CompactChecker,
 ) -> (BinaryFuseParams, DoublePirDatabase, LweParams, hibp::CheckerStats) {
@@ -437,26 +440,75 @@ fn create_pir_demo_database_compact(
     // Consume the checker and get ownership of entries
     let entries = checker.into_data().into_entries();
     
-    info!("Converting {} entries to PIR format...", entries.len());
-    let database: Vec<(String, Vec<u8>)> = entries
+    // Ultra memory-efficient: use [u8; 20] keys AND [u8; 4] values directly
+    // This saves ~68 bytes per entry (92 → 24 bytes)
+    // For 900M entries: saves ~61 GB!
+    info!("Converting {} entries to PIR format (zero-copy)...", entries.len());
+    let database: Vec<([u8; 20], [u8; 4])> = entries
         .into_iter()
         .map(|entry| {
-            let hash_str = hex::encode_upper(entry.hash);
-            let value = entry.count.to_le_bytes().to_vec();
-            (hash_str, value)
+            // Use raw bytes directly - no String/Vec allocation!
+            (entry.hash, entry.count.to_le_bytes())
         })
         .collect();
 
     info!("Loaded {} HIBP entries for PIR (original data freed)", database.len());
 
-    let (params, db, lwe) = build_pir_from_database(database);
+    let (params, db, lwe) = build_pir_from_database_fixed(database);
     (params, db, lwe, stats)
 }
 
-/// Build PIR database from key-value pairs
-/// Memory is carefully managed - drops intermediates as soon as possible
+/// Build PIR database from String key-value pairs (for PasswordChecker)
 fn build_pir_from_database(
     database: Vec<(String, Vec<u8>)>,
+) -> (BinaryFuseParams, DoublePirDatabase, LweParams) {
+    build_pir_from_database_generic(database)
+}
+
+/// Build PIR database from fixed-size key-value pairs (most memory efficient)
+/// Uses [u8; 20] keys AND [u8; 4] values - zero heap allocation per entry
+fn build_pir_from_database_fixed(
+    database: Vec<([u8; 20], [u8; 4])>,
+) -> (BinaryFuseParams, DoublePirDatabase, LweParams) {
+    info!("PIR database: {} entries (fixed-size)", database.len());
+
+    let value_size = 4;
+
+    // Build Binary Fuse Filter using fixed-size arrays
+    let filter = BinaryFuseFilter::build_from_fixed_unchecked(&database, 0xDEADBEEF_CAFEBABE)
+        .expect("Failed to build Binary Fuse Filter");
+
+    // Drop input database
+    drop(database);
+    info!("Freed input database memory");
+
+    info!(
+        "Binary Fuse Filter: {} entries -> {} slots (expansion: {:.2}x)",
+        filter.num_entries(),
+        filter.filter_size(),
+        filter.expansion_factor()
+    );
+
+    let filter_params = filter.params();
+    let record_refs = filter.as_records();
+    let db = DoublePirDatabase::new(&record_refs, value_size);
+    
+    drop(filter);
+    info!("Freed Binary Fuse Filter data");
+
+    let lwe_params = LweParams {
+        n: 64,
+        p: 256,
+        noise_stddev: 0.0,
+    };
+
+    (filter_params, db, lwe_params)
+}
+
+/// Generic PIR database builder - works with any hashable key type
+/// Memory is carefully managed - drops intermediates as soon as possible
+fn build_pir_from_database_generic<K: std::hash::Hash + Eq + Clone>(
+    database: Vec<(K, Vec<u8>)>,
 ) -> (BinaryFuseParams, DoublePirDatabase, LweParams) {
     info!("PIR database: {} entries", database.len());
 
