@@ -535,7 +535,7 @@ mod tests {
     #[test]
     fn test_json_roundtrip() {
         let params = JsBinaryFuseParams {
-            seed: 12345,
+            seed: "12345".to_string(),
             segment_size: 128,
             filter_size: 384,
             value_size: 8,

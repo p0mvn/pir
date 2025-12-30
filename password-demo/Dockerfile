@@ -3,14 +3,14 @@ FROM rust:1.83-slim-bookworm AS builder
 
 WORKDIR /app
 
-# Install build dependencies
+# Install build dependencies (git needed for fetching pir crate from GitHub)
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy all required crates
-COPY pir ./pir
+# Copy local crates (pir is fetched from GitHub via Cargo)
 COPY hibp ./hibp
 COPY server ./server
 

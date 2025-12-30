@@ -21,8 +21,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # HIBP library (local dependency)
 hibp = { path = "../hibp" }
 
-# PIR library (copied to password-demo/pir for deployment)
-pir = { path = "../pir" }
+# PIR library (from public GitHub repo)
+pir = { git = "https://github.com/p0mvn/pir.git", branch = "main" }
 
 # Random number generation
 rand = "0.9"
