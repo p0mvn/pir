@@ -11,7 +11,8 @@ use tracing::info;
 pub struct PasswordChecker {
     ranges_dir: Option<PathBuf>,
     /// Optional in-memory cache for loaded ranges
-    cache: Option<HashMap<String, HashMap<String, u32>>>,
+    /// Uses sorted Vec for memory efficiency (binary search for lookups)
+    cache: Option<HashMap<String, Vec<(String, u32)>>>,
 }
 
 impl PasswordChecker {
@@ -32,8 +33,8 @@ impl PasswordChecker {
 
     /// Create a checker from a pre-loaded in-memory cache
     /// This is useful when data was downloaded directly to memory
-    pub fn from_cache(cache: HashMap<String, HashMap<String, u32>>) -> Self {
-        let total_hashes: usize = cache.values().map(|m| m.len()).sum();
+    pub fn from_cache(cache: HashMap<String, Vec<(String, u32)>>) -> Self {
+        let total_hashes: usize = cache.values().map(|v| v.len()).sum();
         info!(
             "Created PasswordChecker from in-memory cache: {} ranges, {} hashes",
             cache.len(),
@@ -89,11 +90,11 @@ impl PasswordChecker {
         Ok(self)
     }
 
-    /// Parse a range file into a HashMap of suffix -> count
-    fn parse_range_file(path: &Path) -> Result<HashMap<String, u32>, Error> {
+    /// Parse a range file into a sorted Vec of (suffix, count)
+    fn parse_range_file(path: &Path) -> Result<Vec<(String, u32)>, Error> {
         let file = fs::File::open(path)?;
         let reader = BufReader::new(file);
-        let mut map = HashMap::new();
+        let mut entries = Vec::new();
 
         for line in reader.lines() {
             let line = line?;
@@ -105,12 +106,14 @@ impl PasswordChecker {
             // Format: SUFFIX:COUNT (e.g., "1E4C9B93F3F0682250B6CF8331B7EE68FD8:12345")
             if let Some((suffix, count_str)) = line.split_once(':') {
                 if let Ok(count) = count_str.parse::<u32>() {
-                    map.insert(suffix.to_uppercase(), count);
+                    entries.push((suffix.to_uppercase(), count));
                 }
             }
         }
+        // HIBP files are sorted, but ensure for binary search
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
 
-        Ok(map)
+        Ok(entries)
     }
 
     /// Check if a password hash is in the database
@@ -127,10 +130,10 @@ impl PasswordChecker {
         let prefix = prefix.to_uppercase();
         let suffix = suffix.to_uppercase();
 
-        // Check cache first
+        // Check cache first (uses binary search on sorted Vec)
         if let Some(cache) = &self.cache {
             if let Some(range) = cache.get(&prefix) {
-                return Ok(range.get(&suffix).copied());
+                return Ok(Self::binary_search_suffix(range, &suffix));
             } else {
                 return Ok(None); // Prefix not in cache means not downloaded
             }
@@ -150,7 +153,15 @@ impl PasswordChecker {
         }
 
         let range_data = Self::parse_range_file(&file_path)?;
-        Ok(range_data.get(&suffix).copied())
+        Ok(Self::binary_search_suffix(&range_data, &suffix))
+    }
+
+    /// Binary search for a suffix in a sorted Vec
+    fn binary_search_suffix(entries: &[(String, u32)], suffix: &str) -> Option<u32> {
+        entries
+            .binary_search_by(|(s, _)| s.as_str().cmp(suffix))
+            .ok()
+            .map(|idx| entries[idx].1)
     }
 
     /// Check if a password (plaintext) is in the database
@@ -163,7 +174,7 @@ impl PasswordChecker {
     /// Get statistics about loaded data
     pub fn stats(&self) -> CheckerStats {
         if let Some(cache) = &self.cache {
-            let total_hashes: usize = cache.values().map(|m| m.len()).sum();
+            let total_hashes: usize = cache.values().map(|v| v.len()).sum();
             CheckerStats {
                 ranges_loaded: cache.len(),
                 total_hashes,
@@ -189,7 +200,7 @@ impl PasswordChecker {
     }
     
     /// Get a reference to the in-memory cache (if loaded)
-    pub fn get_cache(&self) -> Option<&HashMap<String, HashMap<String, u32>>> {
+    pub fn get_cache(&self) -> Option<&HashMap<String, Vec<(String, u32)>>> {
         self.cache.as_ref()
     }
 }
