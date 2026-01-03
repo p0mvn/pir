@@ -25,8 +25,13 @@ pub struct LogProgress;
 
 impl DownloadProgress for LogProgress {
     fn on_file_complete(&self, _prefix: &str, current: usize, total: usize) {
-        if current % 1000 == 0 || current == total {
-            info!("Downloaded {}/{} files ({:.1}%)", current, total, (current as f64 / total as f64) * 100.0);
+        if current.is_multiple_of(1000) || current == total {
+            info!(
+                "Downloaded {}/{} files ({:.1}%)",
+                current,
+                total,
+                (current as f64 / total as f64) * 100.0
+            );
         }
     }
 
@@ -65,7 +70,9 @@ impl Downloader {
 
     /// Generate all possible 5-character hex prefixes (00000 to FFFFF)
     fn all_prefixes() -> Vec<String> {
-        let chars = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'];
+        let chars = [
+            '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F',
+        ];
         let mut prefixes = Vec::with_capacity(1_048_576); // 16^5
 
         for a in &chars {
@@ -84,7 +91,9 @@ impl Downloader {
 
     /// Generate prefixes for a tiny sample (000XX - 256 files)
     fn tiny_prefixes() -> Vec<String> {
-        let chars = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'];
+        let chars = [
+            '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F',
+        ];
         let mut prefixes = Vec::with_capacity(256);
 
         for d in &chars {
@@ -97,7 +106,9 @@ impl Downloader {
 
     /// Generate prefixes for a sample (0XXXX - 65,536 files)
     fn sample_prefixes() -> Vec<String> {
-        let chars = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'];
+        let chars = [
+            '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F',
+        ];
         let mut prefixes = Vec::with_capacity(65_536);
 
         for b in &chars {
@@ -158,7 +169,10 @@ impl Downloader {
                                     errors.fetch_add(1, Ordering::SeqCst);
                                     break;
                                 }
-                                tokio::time::sleep(tokio::time::Duration::from_millis(100 * attempts)).await;
+                                tokio::time::sleep(tokio::time::Duration::from_millis(
+                                    100 * attempts,
+                                ))
+                                .await;
                             }
                         }
                     }
@@ -180,21 +194,24 @@ impl Downloader {
     /// Good for quick testing
     pub async fn download_tiny(&self) -> Result<usize, Error> {
         info!("Downloading tiny HIBP sample (256 files)...");
-        self.download_prefixes(Self::tiny_prefixes(), &LogProgress).await
+        self.download_prefixes(Self::tiny_prefixes(), &LogProgress)
+            .await
     }
 
     /// Download a sample (65,536 files, ~2.5GB)
     /// Good for development
     pub async fn download_sample(&self) -> Result<usize, Error> {
         info!("Downloading HIBP sample (65,536 files)...");
-        self.download_prefixes(Self::sample_prefixes(), &LogProgress).await
+        self.download_prefixes(Self::sample_prefixes(), &LogProgress)
+            .await
     }
 
     /// Download the full database (1,048,576 files, ~38GB)
     /// Takes ~15 minutes with good connection
     pub async fn download_full(&self) -> Result<usize, Error> {
         info!("Downloading full HIBP database (1,048,576 files)...");
-        self.download_prefixes(Self::all_prefixes(), &LogProgress).await
+        self.download_prefixes(Self::all_prefixes(), &LogProgress)
+            .await
     }
 
     /// Download with custom progress reporting
@@ -289,7 +306,10 @@ impl InMemoryDownloader {
 
     /// Download a single range and return the parsed data
     /// Returns a sorted Vec for memory efficiency (uses ~40% less RAM than HashMap)
-    async fn download_and_parse(&self, prefix: &str) -> Result<(String, Vec<(String, u32)>), Error> {
+    async fn download_and_parse(
+        &self,
+        prefix: &str,
+    ) -> Result<(String, Vec<(String, u32)>), Error> {
         let url = format!("https://api.pwnedpasswords.com/range/{}", prefix);
         let response = self.client.get(&url).send().await?;
         let body = response.text().await?;
@@ -359,7 +379,7 @@ impl InMemoryDownloader {
                                 let current = completed.fetch_add(1, Ordering::SeqCst) + 1;
 
                                 // Log progress at regular intervals
-                                if current % 1000 == 0 || current == total {
+                                if current.is_multiple_of(1000) || current == total {
                                     let pct = (current as f64 / total as f64) * 100.0;
                                     info!(
                                         "Download progress: {}/{} ranges ({:.1}%) - last batch had {} hashes",
@@ -405,7 +425,10 @@ impl InMemoryDownloader {
                 error_count, success_count, error_count
             );
         } else {
-            info!("Download completed successfully: {} ranges loaded", success_count);
+            info!(
+                "Download completed successfully: {} ranges loaded",
+                success_count
+            );
         }
 
         let result = Arc::try_unwrap(cache)
@@ -465,7 +488,7 @@ impl CompactDownloader {
         let body = response.text().await?;
 
         let mut entries = Vec::with_capacity(2000); // typical range size
-        
+
         for line in body.lines() {
             let line = line.trim();
             if line.is_empty() {
@@ -490,16 +513,16 @@ impl CompactDownloader {
         if prefix.len() != 5 || suffix.len() != 35 {
             return None;
         }
-        
+
         let mut bytes = [0u8; 20];
         let full = format!("{}{}", prefix, suffix);
-        
+
         for (i, chunk) in full.as_bytes().chunks(2).enumerate() {
             let high = Self::hex_nibble(chunk[0])?;
             let low = Self::hex_nibble(chunk[1])?;
             bytes[i] = (high << 4) | low;
         }
-        
+
         Some(bytes)
     }
 
@@ -514,19 +537,16 @@ impl CompactDownloader {
     }
 
     /// Download HIBP data into compact binary format
-    /// 
+    ///
     /// Memory usage: ~24 bytes per entry
     /// Full database (~2B entries): ~48 GB
-    pub async fn download_compact(
-        &self,
-        size: DownloadSize,
-    ) -> Result<CompactHibpData, Error> {
+    pub async fn download_compact(&self, size: DownloadSize) -> Result<CompactHibpData, Error> {
         let prefixes = size.prefixes();
         let total = prefixes.len();
-        
+
         // Estimate total entries: ~2000 per prefix
         let estimated_entries = total * 2000;
-        
+
         info!(
             "Starting compact download of {} HIBP dataset ({} ranges, ~{} entries)...",
             size.description(),
@@ -539,7 +559,7 @@ impl CompactDownloader {
         );
 
         // Collect all entries into a single Vec
-        let all_entries: Arc<Mutex<Vec<HashEntry>>> = 
+        let all_entries: Arc<Mutex<Vec<HashEntry>>> =
             Arc::new(Mutex::new(Vec::with_capacity(estimated_entries)));
         let completed = Arc::new(AtomicUsize::new(0));
         let errors = Arc::new(AtomicUsize::new(0));
@@ -556,22 +576,23 @@ impl CompactDownloader {
                     loop {
                         let result = tokio::time::timeout(
                             tokio::time::Duration::from_secs(60),
-                            self.download_range_compact(&prefix)
-                        ).await;
+                            self.download_range_compact(&prefix),
+                        )
+                        .await;
 
                         match result {
                             Ok(Ok(entries)) => {
                                 let hash_count = entries.len();
                                 total_hashes.fetch_add(hash_count, Ordering::SeqCst);
-                                
+
                                 // Append to main vector
                                 {
                                     let mut all = all_entries.lock().unwrap();
                                     all.extend(entries);
                                 }
-                                
+
                                 let current = completed.fetch_add(1, Ordering::SeqCst) + 1;
-                                if current % 1000 == 0 || current == total {
+                                if current.is_multiple_of(1000) || current == total {
                                     let pct = (current as f64 / total as f64) * 100.0;
                                     let total_h = total_hashes.load(Ordering::SeqCst);
                                     let mem_gb = (total_h * 24) as f64 / 1024.0 / 1024.0 / 1024.0;
@@ -585,12 +606,18 @@ impl CompactDownloader {
                             Ok(Err(e)) => {
                                 attempts += 1;
                                 if attempts >= 3 {
-                                    warn!("Failed to download range {} after 3 attempts: {}", prefix, e);
+                                    warn!(
+                                        "Failed to download range {} after 3 attempts: {}",
+                                        prefix, e
+                                    );
                                     errors.fetch_add(1, Ordering::SeqCst);
                                     break;
                                 }
                                 warn!("Retry {}/3 for range {}: {}", attempts, prefix, e);
-                                tokio::time::sleep(tokio::time::Duration::from_millis(500 * attempts)).await;
+                                tokio::time::sleep(tokio::time::Duration::from_millis(
+                                    500 * attempts,
+                                ))
+                                .await;
                             }
                             Err(_timeout) => {
                                 attempts += 1;
@@ -600,7 +627,10 @@ impl CompactDownloader {
                                     break;
                                 }
                                 warn!("Timeout retry {}/3 for range {}", attempts, prefix);
-                                tokio::time::sleep(tokio::time::Duration::from_millis(500 * attempts)).await;
+                                tokio::time::sleep(tokio::time::Duration::from_millis(
+                                    500 * attempts,
+                                ))
+                                .await;
                             }
                         }
                     }
@@ -622,16 +652,16 @@ impl CompactDownloader {
         }
 
         info!("Sorting {} entries...", hash_count);
-        
+
         // Extract entries and sort
         let mut entries = Arc::try_unwrap(all_entries)
             .expect("Arc should have single owner")
             .into_inner()
             .unwrap();
-        
+
         entries.sort_unstable_by(|a, b| a.hash.cmp(&b.hash));
         entries.shrink_to_fit();
-        
+
         let mem_bytes = entries.len() * std::mem::size_of::<HashEntry>();
         info!(
             "Compact dataset ready: {} hashes, {:.2} GB",
@@ -648,4 +678,3 @@ impl Default for CompactDownloader {
         Self::new()
     }
 }
-

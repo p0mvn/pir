@@ -24,7 +24,7 @@ use crate::ring_regev::{RLWECiphertextOwned, RlweParams};
 
 /// Given a d×d matrix M (stored row-major as Vec<Vec<u32>>),
 /// extract the polynomial A such that rot(A) = M.
-/// 
+///
 /// For this to be valid, M must actually BE a negacyclic matrix.
 /// In the general case (arbitrary LWE ciphertexts), M won't be negacyclic,
 /// so we need a different approach (key switching).
@@ -42,37 +42,39 @@ fn matrix_to_ring_element(first_column: &[u32], d: usize) -> RingElement {
 }
 
 /// Pack d LWE ciphertexts into 1 RLWE ciphertext.
-/// 
+///
 /// CAVEAT: This naive version only works if the a_i vectors form
 /// a negacyclic matrix. For arbitrary LWE ciphertexts, we need
 /// key switching (see pack_with_key_switching).
-/// 
+///
 /// The key insight: LWE computes c_i = ⟨a_i, s⟩ where a_i = x^i·A (rotation).
 /// This means c = rot(A)·s (matrix-vector product).
-/// 
+///
 /// RLWE decryption computes C - A'·S (polynomial multiplication).
 /// For A'·S to equal rot(A)·s, we must use A' = first_column directly
 /// (NOT the recovered original polynomial A).
 pub fn pack_naive(
-    lwe_cts: &[Ciphertext],  // d ciphertexts, each with a.len() == d
+    lwe_cts: &[Ciphertext], // d ciphertexts, each with a.len() == d
     d: usize,
 ) -> RLWECiphertextOwned {
     assert_eq!(lwe_cts.len(), d);
-    
+
     // Extract first column of the matrix formed by stacking a_i as rows.
     // This IS the polynomial we need for RLWE (not the original A that
     // generated these rotations). The first column [a_0, -a_{d-1}, ..., -a_1]
     // when used directly makes polynomial multiplication A'·S equal the
     // matrix-vector product rot(A)·s that LWE encryption computed.
     let first_column: Vec<u32> = lwe_cts.iter().map(|ct| ct.a[0]).collect();
-    
-    let a_poly = RingElement { coeffs: first_column };
-    
+
+    let a_poly = RingElement {
+        coeffs: first_column,
+    };
+
     // Stack the c values into a polynomial
     let c_poly = RingElement {
         coeffs: lwe_cts.iter().map(|ct| ct.c).collect(),
     };
-    
+
     RLWECiphertextOwned {
         a: a_poly,
         c: c_poly,
@@ -97,9 +99,9 @@ pub fn pack_naive(
 /// - NUM_DIGITS = 32/8 = 4 (instead of 32)
 /// - Each digit is in range [0, 255]
 /// - 8x reduction in packing key size
-
-/// Number of bits per digit in gadget decomposition.
-/// LOG_BASE = 8 means base 256.
+///
+///   Number of bits per digit in gadget decomposition.
+///   LOG_BASE = 8 means base 256.
 pub const LOG_BASE: usize = 8;
 
 /// The decomposition base: B = 2^LOG_BASE = 256
@@ -267,30 +269,47 @@ fn zero_rlwe_ciphertext(d: usize) -> RLWECiphertextOwned {
 ///   C' = c · x^j - Σ_i Σ_k d_k · KS[i][k]
 ///
 /// which decrypts to: c · x^j - ⟨a, s⟩ · x^j = (e + Δμ) · x^j ≈ Δμ · x^j
-pub fn key_switch(
-    lwe_ct: &Ciphertext,
-    ks_key: &KeySwitchKey,
-    d: usize,
-) -> RLWECiphertextOwned {
-    assert_eq!(lwe_ct.a.len(), d);
+///
+/// # Dimensions
+///
+/// This function supports both homogeneous (n = d) and heterogeneous (n ≠ d) cases:
+/// - LWE dimension n is inferred from `lwe_ct.a.len()`
+/// - RLWE ring dimension d is inferred from `ks_key`
+///
+/// The key-switch key must be generated with matching dimensions.
+pub fn key_switch(lwe_ct: &Ciphertext, ks_key: &KeySwitchKey) -> RLWECiphertextOwned {
+    // Infer dimensions from inputs
+    let lwe_dim = lwe_ct.a.len();
+    let ring_dim = ks_key.ks[0][0].a.coeffs.len();
     let j = ks_key.target_position;
 
-    // Start with the "c" part: we need c · x^j as a polynomial
-    // This will be the C component of our RLWE ciphertext
-    let mut c_poly_coeffs = vec![0u32; d];
+    assert_eq!(
+        ks_key.ks.len(),
+        lwe_dim,
+        "KS key has {} components but LWE ciphertext has dimension {}",
+        ks_key.ks.len(),
+        lwe_dim
+    );
+    assert!(
+        j < ring_dim,
+        "Target position {} >= ring dimension {}",
+        j,
+        ring_dim
+    );
+
+    // c · x^j as a polynomial (ring_dim coefficients)
+    let mut c_poly_coeffs = vec![0u32; ring_dim];
     c_poly_coeffs[j] = lwe_ct.c;
     let c_poly = RingElement {
         coeffs: c_poly_coeffs,
     };
 
-    // Now we need to subtract the key-switched ⟨a, s⟩ term
     // Accumulate: Σ_i Σ_k d_k · KS[i][k]
-    let mut accumulated = zero_rlwe_ciphertext(d);
-
-    // Mask to extract a single digit (B-1 = 2^LOG_BASE - 1)
+    let mut accumulated = zero_rlwe_ciphertext(ring_dim);
     let digit_mask = GADGET_BASE - 1;
 
-    for i in 0..d {
+    // Iterate over LWE dimension (n)
+    for i in 0..lwe_dim {
         let mut a_i = lwe_ct.a[i];
 
         // Decompose a_i into base-B digits and accumulate
@@ -300,7 +319,6 @@ pub fn key_switch(
 
             if digit != 0 {
                 // Add digit · KS[i][k] to the accumulator
-                // This is the key difference from base-2: scalar multiplication
                 accumulated = add_scaled_rlwe_ciphertext(&accumulated, digit, &ks_key.ks[i][k]);
             }
 
@@ -346,34 +364,44 @@ pub fn key_switch(
 ///   KS[i][3] = RLWE.Enc(s_i · 256³ · x^j)
 ///
 /// Note: This bypasses the plaintext modulus p entirely.
+///
+/// # Dimensions
+///
+/// - LWE dimension n is inferred from `lwe_secret.len()`
+/// - RLWE ring dimension d is inferred from `rlwe_secret.coeffs.len()`
+/// - These can be different (heterogeneous case)
 pub fn gen_key_switch_key_raw(
     lwe_secret: &[u32],
     rlwe_secret: &RingElement,
     j: usize,
-    d: usize,
     noise_stddev: f64,
     rng: &mut impl Rng,
 ) -> KeySwitchKey {
-    assert_eq!(lwe_secret.len(), d);
-    assert_eq!(rlwe_secret.coeffs.len(), d);
-    assert!(j < d);
+    let lwe_dim = lwe_secret.len();
+    let ring_dim = rlwe_secret.coeffs.len();
+    assert!(
+        j < ring_dim,
+        "Target position {} >= ring dimension {}",
+        j,
+        ring_dim
+    );
 
-    let mut ks = Vec::with_capacity(d);
+    let mut ks = Vec::with_capacity(lwe_dim);
 
-    for i in 0..d {
+    for i in 0..lwe_dim {
         let mut ks_i = Vec::with_capacity(NUM_DIGITS);
         for k in 0..NUM_DIGITS {
             // Create raw RLWE encryption of s_i · B^k · x^j
             // c = a · S + e + s_i · B^k · x^j (NO Δ scaling!)
 
-            let a = RingElement::random(d, rng);
-            let e = RingElement::random_small(d, noise_stddev as i32, rng);
+            let a = RingElement::random(ring_dim, rng);
+            let e = RingElement::random_small(ring_dim, noise_stddev as i32, rng);
 
             // Message: s_i · B^k · x^j
             // B^k = (2^LOG_BASE)^k = 2^(LOG_BASE * k)
             let power = (LOG_BASE * k) as u32;
             let scalar = lwe_secret[i].wrapping_mul(1u32 << power);
-            let mut msg_coeffs = vec![0u32; d];
+            let mut msg_coeffs = vec![0u32; ring_dim];
             msg_coeffs[j] = scalar;
             let msg = RingElement { coeffs: msg_coeffs };
 
@@ -414,38 +442,71 @@ pub fn decrypt_raw(rlwe_secret: &RingElement, ct: &RLWECiphertextOwned) -> RingE
 /// LWE(μ₃) --[KS to pos 3]--> RLWE(μ₃·x³)    /
 /// ```
 ///
+/// ## Homogeneous Case (n = d)
+///
 /// Size: d × d × NUM_DIGITS × 2d coefficients = O(d³ · log_B(q)) storage
 /// where B = GADGET_BASE = 256 and NUM_DIGITS = 32/LOG_BASE = 4.
 ///
 /// For d=4, NUM_DIGITS=4: 4 × 4 × 4 × 2 × 4 = 512 u32 values
 /// (8x smaller than base-2 decomposition with LOG_Q=32)
+///
+/// ## Heterogeneous Case (n ≠ d)
+///
+/// When LWE dimension n differs from RLWE ring dimension d:
+/// - Size: d × n × NUM_DIGITS × 2d coefficients
+/// - Each KS key has n components (one per LWE secret element)
+/// - Result has d positions (ring dimension)
 pub struct PackingKey {
     /// keys[j] is the key-switching key for position j
     pub keys: Vec<KeySwitchKey>,
-    /// Ring dimension
+    /// RLWE ring dimension (number of positions to pack into)
     pub d: usize,
+    /// LWE dimension (length of LWE secret)
+    pub n: usize,
 }
 
-/// Generate a packing key for converting d LWE ciphertexts to 1 RLWE ciphertext.
+/// Generate a packing key for converting LWE ciphertexts to RLWE ciphertexts.
 ///
 /// # Arguments
-/// * `lwe_secret` - The LWE secret key (vector of d elements)
-/// * `rlwe_secret` - The RLWE secret key (polynomial with d coefficients)
-/// * `d` - Ring dimension
+/// * `lwe_secret` - The LWE secret key (length determines LWE dimension n)
+/// * `rlwe_secret` - The RLWE secret key (length determines ring dimension d)
 /// * `noise_stddev` - Standard deviation for RLWE encryption noise
 /// * `rng` - Random number generator
+///
+/// # Dimensions
+///
+/// - LWE dimension n is inferred from `lwe_secret.len()`
+/// - RLWE ring dimension d is inferred from `rlwe_secret.coeffs.len()`
+/// - These can be the same (homogeneous) or different (heterogeneous)
+///
+/// # Packing Capacity
+///
+/// Each call to `pack_with_key_switching` packs exactly `d` LWE ciphertexts
+/// into one RLWE ciphertext. If you have more LWE ciphertexts, call packing multiple times.
+///
+/// # Size
+///
+/// The packing key size is `d × n × NUM_DIGITS × 2d × sizeof(u32)` bytes.
+/// For n=1024, d=2048, NUM_DIGITS=4: 2048 × 1024 × 4 × 4096 × 4 ≈ 137 GB
+/// (This is why YPIR queries are larger than DoublePIR queries.)
 pub fn gen_packing_key(
     lwe_secret: &[u32],
     rlwe_secret: &RingElement,
-    d: usize,
     noise_stddev: f64,
     rng: &mut impl Rng,
 ) -> PackingKey {
-    let keys = (0..d)
-        .map(|j| gen_key_switch_key_raw(lwe_secret, rlwe_secret, j, d, noise_stddev, rng))
+    let lwe_dim = lwe_secret.len();
+    let ring_dim = rlwe_secret.coeffs.len();
+
+    let keys = (0..ring_dim)
+        .map(|j| gen_key_switch_key_raw(lwe_secret, rlwe_secret, j, noise_stddev, rng))
         .collect();
 
-    PackingKey { keys, d }
+    PackingKey {
+        keys,
+        d: ring_dim,
+        n: lwe_dim,
+    }
 }
 
 /// Pack d LWE ciphertexts into 1 RLWE ciphertext using key switching.
@@ -461,14 +522,21 @@ pub fn gen_packing_key(
 /// An RLWE ciphertext encrypting the polynomial μ(x) = μ₀ + μ₁x + μ₂x² + ... + μ_{d-1}x^{d-1}
 ///
 /// # Compression
-/// - Input: d LWE ciphertexts, each with (d+1) elements = d(d+1) total
+/// - Input: d LWE ciphertexts, each with (n+1) elements = d(n+1) total
 /// - Output: 1 RLWE ciphertext with 2d elements
-/// - Compression ratio: (d+1)/2 ≈ d/2 for large d
+/// - Compression ratio: (n+1)/2 for homogeneous case (n=d), varies for heterogeneous
+///
+/// # Dimension Handling
+///
+/// - Homogeneous (n = d): Each LWE ciphertext has d-element `a` vector
+/// - Heterogeneous (n ≠ d): Each LWE ciphertext has n-element `a` vector,
+///   result has d-coefficient polynomials
 pub fn pack_with_key_switching(
     lwe_cts: &[Ciphertext],
     packing_key: &PackingKey,
 ) -> RLWECiphertextOwned {
     let d = packing_key.d;
+    let n = packing_key.n;
     assert_eq!(lwe_cts.len(), d, "Must provide exactly d LWE ciphertexts");
 
     // Start with zero RLWE ciphertext
@@ -476,8 +544,17 @@ pub fn pack_with_key_switching(
 
     // Key-switch each LWE ciphertext to its position and accumulate
     for (j, lwe_ct) in lwe_cts.iter().enumerate() {
+        assert_eq!(
+            lwe_ct.a.len(),
+            n,
+            "LWE ciphertext {} has wrong dimension: expected {}, got {}",
+            j,
+            n,
+            lwe_ct.a.len()
+        );
+
         // Key-switch ct_j to position j: produces RLWE encrypting μ_j · x^j
-        let rlwe_j = key_switch(lwe_ct, &packing_key.keys[j], d);
+        let rlwe_j = key_switch(lwe_ct, &packing_key.keys[j]);
 
         // Add to accumulator
         result = add_rlwe_ciphertexts(&result, &rlwe_j);
@@ -526,21 +603,27 @@ mod tests {
     ) -> Vec<CiphertextOwned> {
         // Generate a random polynomial
         let base_poly = RingElement::random(d, rng);
-        
+
         let mut cts = Vec::with_capacity(d);
         for i in 0..d {
             // Create the i-th rotation of base_poly
             let a = rotate_negacyclic(&base_poly.coeffs, i);
-            
+
             // Encrypt: c = ⟨a, s⟩ + e + Δ·μ
-            let c = regev::encrypt(params, &a, &regev::SecretKey { s: secret }, messages[i], rng);
-            
+            let c = regev::encrypt(
+                params,
+                &a,
+                &regev::SecretKey { s: secret },
+                messages[i],
+                rng,
+            );
+
             cts.push(regev::CiphertextOwned { a, c });
         }
         cts
     }
 
-        /// Rotate polynomial coefficients negacyclically by k positions
+    /// Rotate polynomial coefficients negacyclically by k positions
     /// x^k · (a₀ + a₁x + ...) mod (x^d + 1)
     fn rotate_negacyclic(coeffs: &[u32], k: usize) -> Vec<u32> {
         let d = coeffs.len();
@@ -584,30 +667,31 @@ mod tests {
     #[test]
     fn test_pack_naive_d4() {
         let d = 4;
-        let params = LweParams { n: d, p: 256, noise_stddev: 3.2 };
+        let params = LweParams {
+            n: d,
+            p: 256,
+            noise_stddev: 3.2,
+        };
         let mut rng = rand::rng();
-        
+
         // Generate secret (same for LWE and RLWE)
         let secret: Vec<u32> = (0..d).map(|_| rng.random()).collect();
-        
+
         // Messages to pack
         let messages: Vec<u32> = (0..d).map(|_| rng.random_range(0..params.p)).collect();
-        
+
         // Create LWE ciphertexts with negacyclic structure
         let lwe_cts = create_negacyclic_lwe_ciphertexts(d, &secret, &messages, &params, &mut rng);
-        
+
         // Pack into RLWE
         let lwe_refs: Vec<_> = lwe_cts.iter().map(|ct| ct.as_ref()).collect();
         let rlwe_ct = pack_naive(&lwe_refs, d);
-        
+
         // Decrypt RLWE
         let rlwe_params = RlweParams::new(d, params.p, params.noise_stddev);
-        let decrypted = crate::ring_regev::decrypt(
-            &rlwe_params,
-            &regev::SecretKey { s: &secret },
-            &rlwe_ct,
-        );
-        
+        let decrypted =
+            crate::ring_regev::decrypt(&rlwe_params, &regev::SecretKey { s: &secret }, &rlwe_ct);
+
         // Check that we recovered the packed message
         assert_eq!(decrypted.coeffs, messages);
     }
@@ -630,7 +714,7 @@ mod tests {
         };
 
         let j = 2; // Target position
-        let ks_key = gen_key_switch_key_raw(&lwe_secret, &rlwe_secret, j, d, noise_stddev, &mut rng);
+        let ks_key = gen_key_switch_key_raw(&lwe_secret, &rlwe_secret, j, noise_stddev, &mut rng);
 
         // Check dimensions - now using NUM_DIGITS instead of LOG_Q (32)
         assert_eq!(ks_key.ks.len(), d);
@@ -654,11 +738,11 @@ mod tests {
         };
 
         let j = 1; // Target position x^1
-        let ks_key = gen_key_switch_key_raw(&lwe_secret, &rlwe_secret, j, d, noise_stddev, &mut rng);
+        let ks_key = gen_key_switch_key_raw(&lwe_secret, &rlwe_secret, j, noise_stddev, &mut rng);
 
         // Check a few entries: KS[i][k] should decrypt to s_i · B^k · x^j
         // where B = GADGET_BASE = 256
-        
+
         // KS[0][0]: should be s_0 · B^0 · x^1 = 5 · 1 · x = 5x
         let decrypted_00 = decrypt_raw(&rlwe_secret, &ks_key.ks[0][0]);
 
@@ -735,19 +819,26 @@ mod tests {
         // Create a random LWE ciphertext
         let message = 42u32;
         let a: Vec<u32> = (0..d).map(|_| rng.random()).collect();
-        let c = regev::encrypt(&params, &a, &regev::SecretKey { s: &secret }, message, &mut rng);
+        let c = regev::encrypt(
+            &params,
+            &a,
+            &regev::SecretKey { s: &secret },
+            message,
+            &mut rng,
+        );
         let lwe_ct = CiphertextOwned { a: a.clone(), c };
 
         // Verify LWE decryption works
-        let lwe_decrypted = regev::decrypt(&params, &regev::SecretKey { s: &secret }, &lwe_ct.as_ref());
+        let lwe_decrypted =
+            regev::decrypt(&params, &regev::SecretKey { s: &secret }, &lwe_ct.as_ref());
         assert_eq!(lwe_decrypted, message);
 
         // Generate key-switch key for position j=0
         let j = 0;
-        let ks_key = gen_key_switch_key_raw(&secret, &rlwe_secret, j, d, noise_stddev, &mut rng);
+        let ks_key = gen_key_switch_key_raw(&secret, &rlwe_secret, j, noise_stddev, &mut rng);
 
         // Apply key switching
-        let rlwe_ct = key_switch(&lwe_ct.as_ref(), &ks_key, d);
+        let rlwe_ct = key_switch(&lwe_ct.as_ref(), &ks_key);
 
         // Decrypt the RLWE ciphertext (raw decryption)
         let decrypted_poly = decrypt_raw(&rlwe_secret, &rlwe_ct);
@@ -798,13 +889,19 @@ mod tests {
 
         let message = 100u32;
         let a: Vec<u32> = (0..d).map(|_| rng.random()).collect();
-        let c = regev::encrypt(&params, &a, &regev::SecretKey { s: &secret }, message, &mut rng);
+        let c = regev::encrypt(
+            &params,
+            &a,
+            &regev::SecretKey { s: &secret },
+            message,
+            &mut rng,
+        );
         let lwe_ct = CiphertextOwned { a: a.clone(), c };
 
         // Test each position
         for j in 0..d {
-            let ks_key = gen_key_switch_key_raw(&secret, &rlwe_secret, j, d, noise_stddev, &mut rng);
-            let rlwe_ct = key_switch(&lwe_ct.as_ref(), &ks_key, d);
+            let ks_key = gen_key_switch_key_raw(&secret, &rlwe_secret, j, noise_stddev, &mut rng);
+            let rlwe_ct = key_switch(&lwe_ct.as_ref(), &ks_key);
             let decrypted_poly = decrypt_raw(&rlwe_secret, &rlwe_ct);
 
             let delta = params.delta();
@@ -845,19 +942,31 @@ mod tests {
 
         // Create two LWE ciphertexts
         let a1: Vec<u32> = (0..d).map(|_| rng.random()).collect();
-        let c1 = regev::encrypt(&params, &a1, &regev::SecretKey { s: &secret }, msg1, &mut rng);
+        let c1 = regev::encrypt(
+            &params,
+            &a1,
+            &regev::SecretKey { s: &secret },
+            msg1,
+            &mut rng,
+        );
         let lwe_ct1 = CiphertextOwned { a: a1, c: c1 };
 
         let a2: Vec<u32> = (0..d).map(|_| rng.random()).collect();
-        let c2 = regev::encrypt(&params, &a2, &regev::SecretKey { s: &secret }, msg2, &mut rng);
+        let c2 = regev::encrypt(
+            &params,
+            &a2,
+            &regev::SecretKey { s: &secret },
+            msg2,
+            &mut rng,
+        );
         let lwe_ct2 = CiphertextOwned { a: a2, c: c2 };
 
         // Key-switch both to position 0
         let j = 0;
-        let ks_key = gen_key_switch_key_raw(&secret, &rlwe_secret, j, d, noise_stddev, &mut rng);
+        let ks_key = gen_key_switch_key_raw(&secret, &rlwe_secret, j, noise_stddev, &mut rng);
 
-        let rlwe_ct1 = key_switch(&lwe_ct1.as_ref(), &ks_key, d);
-        let rlwe_ct2 = key_switch(&lwe_ct2.as_ref(), &ks_key, d);
+        let rlwe_ct1 = key_switch(&lwe_ct1.as_ref(), &ks_key);
+        let rlwe_ct2 = key_switch(&lwe_ct2.as_ref(), &ks_key);
 
         // Add RLWE ciphertexts
         let rlwe_sum = add_rlwe_ciphertexts(&rlwe_ct1, &rlwe_ct2);
@@ -893,7 +1002,7 @@ mod tests {
             coeffs: secret.clone(),
         };
 
-        let packing_key = gen_packing_key(&secret, &rlwe_secret, d, noise_stddev, &mut rng);
+        let packing_key = gen_packing_key(&secret, &rlwe_secret, noise_stddev, &mut rng);
 
         // Should have d key-switching keys
         assert_eq!(packing_key.keys.len(), d);
@@ -933,7 +1042,8 @@ mod tests {
             .iter()
             .map(|&msg| {
                 let a: Vec<u32> = (0..d).map(|_| rng.random()).collect();
-                let c = regev::encrypt(&params, &a, &regev::SecretKey { s: &secret }, msg, &mut rng);
+                let c =
+                    regev::encrypt(&params, &a, &regev::SecretKey { s: &secret }, msg, &mut rng);
                 CiphertextOwned { a, c }
             })
             .collect();
@@ -945,7 +1055,7 @@ mod tests {
         }
 
         // Generate packing key
-        let packing_key = gen_packing_key(&secret, &rlwe_secret, d, noise_stddev, &mut rng);
+        let packing_key = gen_packing_key(&secret, &rlwe_secret, noise_stddev, &mut rng);
 
         // Pack into RLWE
         let lwe_refs: Vec<_> = lwe_cts.iter().map(|ct| ct.as_ref()).collect();
@@ -990,12 +1100,13 @@ mod tests {
             .iter()
             .map(|&msg| {
                 let a: Vec<u32> = (0..d).map(|_| rng.random()).collect();
-                let c = regev::encrypt(&params, &a, &regev::SecretKey { s: &secret }, msg, &mut rng);
+                let c =
+                    regev::encrypt(&params, &a, &regev::SecretKey { s: &secret }, msg, &mut rng);
                 CiphertextOwned { a, c }
             })
             .collect();
 
-        let packing_key = gen_packing_key(&secret, &rlwe_secret, d, noise_stddev, &mut rng);
+        let packing_key = gen_packing_key(&secret, &rlwe_secret, noise_stddev, &mut rng);
         let lwe_refs: Vec<_> = lwe_cts.iter().map(|ct| ct.as_ref()).collect();
         let rlwe_ct = pack_with_key_switching(&lwe_refs, &packing_key);
         let decrypted_poly = decrypt_raw(&rlwe_secret, &rlwe_ct);
@@ -1028,12 +1139,13 @@ mod tests {
             .iter()
             .map(|&msg| {
                 let a: Vec<u32> = (0..d).map(|_| rng.random()).collect();
-                let c = regev::encrypt(&params, &a, &regev::SecretKey { s: &secret }, msg, &mut rng);
+                let c =
+                    regev::encrypt(&params, &a, &regev::SecretKey { s: &secret }, msg, &mut rng);
                 CiphertextOwned { a, c }
             })
             .collect();
 
-        let packing_key = gen_packing_key(&secret, &rlwe_secret, d, noise_stddev, &mut rng);
+        let packing_key = gen_packing_key(&secret, &rlwe_secret, noise_stddev, &mut rng);
         let lwe_refs: Vec<_> = lwe_cts.iter().map(|ct| ct.as_ref()).collect();
         let rlwe_ct = pack_with_key_switching(&lwe_refs, &packing_key);
         let decrypted_poly = decrypt_raw(&rlwe_secret, &rlwe_ct);
@@ -1080,7 +1192,7 @@ mod tests {
             coeffs: secret.clone(),
         };
 
-        let packing_key = gen_packing_key(&secret, &rlwe_secret, d, noise_stddev, &mut rng);
+        let packing_key = gen_packing_key(&secret, &rlwe_secret, noise_stddev, &mut rng);
 
         // Count total RLWE ciphertexts in packing key
         let total_rlwe_cts: usize = packing_key
@@ -1159,14 +1271,14 @@ mod tests {
     fn test_base256_noise_growth() {
         // With base-256, each digit can be up to 255, so we multiply ciphertexts
         // by larger values. This increases noise by factor of ~B/2 = 128 per digit.
-        // 
+        //
         // Total noise growth compared to base-2:
         // - Base-2: 32 additions (each adds ~e noise) → ~32e total
         // - Base-256: 4 additions with scalar ~128 each → ~4*128e = 512e total
         //
         // However, we have 8x fewer ciphertexts and operations, which can be
         // worth the noise tradeoff for many applications.
-        
+
         let d = 4;
         let p = 256u32;
         let noise_stddev = 2.0;
@@ -1190,13 +1302,18 @@ mod tests {
                 .iter()
                 .map(|&msg| {
                     let a: Vec<u32> = (0..d).map(|_| rng.random()).collect();
-                    let c =
-                        regev::encrypt(&params, &a, &regev::SecretKey { s: &secret }, msg, &mut rng);
+                    let c = regev::encrypt(
+                        &params,
+                        &a,
+                        &regev::SecretKey { s: &secret },
+                        msg,
+                        &mut rng,
+                    );
                     CiphertextOwned { a, c }
                 })
                 .collect();
 
-            let packing_key = gen_packing_key(&secret, &rlwe_secret, d, noise_stddev, &mut rng);
+            let packing_key = gen_packing_key(&secret, &rlwe_secret, noise_stddev, &mut rng);
             let lwe_refs: Vec<_> = lwe_cts.iter().map(|ct| ct.as_ref()).collect();
             let rlwe_ct = pack_with_key_switching(&lwe_refs, &packing_key);
             let decrypted_poly = decrypt_raw(&rlwe_secret, &rlwe_ct);
@@ -1208,5 +1325,267 @@ mod tests {
                 decoded, messages
             );
         }
+    }
+
+    // ========================================================================
+    // Heterogeneous Dimension Tests (LWE dim n ≠ RLWE dim d)
+    // ========================================================================
+
+    /// Test packing with different LWE and RLWE dimensions
+    #[test]
+    fn test_heterogeneous_packing_n_less_than_d() {
+        // LWE dimension n = 4, RLWE ring dimension d = 8
+        let n = 4;
+        let d = 8;
+        let p = 256u32;
+        let noise_stddev = 2.0;
+        let lwe_params = LweParams { n, p, noise_stddev };
+        let mut rng = rand::rng();
+
+        // Independent secrets!
+        let lwe_secret: Vec<u32> = (0..n).map(|_| rng.random()).collect();
+        let rlwe_secret = RingElement::random_ternary(d, &mut rng);
+
+        // Messages to pack (d messages)
+        let messages: Vec<u32> = (0..d).map(|_| rng.random_range(0..p)).collect();
+
+        // Create d LWE ciphertexts with n-dimensional a vectors
+        let lwe_cts: Vec<CiphertextOwned> = messages
+            .iter()
+            .map(|&msg| {
+                let a: Vec<u32> = (0..n).map(|_| rng.random()).collect();
+                let c = regev::encrypt(
+                    &lwe_params,
+                    &a,
+                    &regev::SecretKey { s: &lwe_secret },
+                    msg,
+                    &mut rng,
+                );
+                CiphertextOwned { a, c }
+            })
+            .collect();
+
+        // Generate packing key (dimensions inferred from secrets)
+        let packing_key = gen_packing_key(&lwe_secret, &rlwe_secret, noise_stddev, &mut rng);
+
+        assert_eq!(packing_key.n, n);
+        assert_eq!(packing_key.d, d);
+
+        // Pack
+        let lwe_refs: Vec<_> = lwe_cts.iter().map(|ct| ct.as_ref()).collect();
+        let rlwe_ct = pack_with_key_switching(&lwe_refs, &packing_key);
+
+        // Verify RLWE ciphertext has correct dimension
+        assert_eq!(rlwe_ct.a.coeffs.len(), d);
+        assert_eq!(rlwe_ct.c.coeffs.len(), d);
+
+        // Decrypt and decode
+        let decrypted_poly = decrypt_raw(&rlwe_secret, &rlwe_ct);
+        let decoded = decode_packed_result(&decrypted_poly, lwe_params.delta(), p);
+
+        assert_eq!(
+            decoded, messages,
+            "Heterogeneous packing failed: got {:?}, expected {:?}",
+            decoded, messages
+        );
+    }
+
+    /// Test with completely independent secrets (uniform LWE, ternary RLWE)
+    #[test]
+    fn test_independent_secrets() {
+        let d = 4;
+        let p = 256u32;
+        let noise_stddev = 2.0;
+        let params = LweParams {
+            n: d,
+            p,
+            noise_stddev,
+        };
+        let mut rng = rand::rng();
+
+        // LWE: uniform random secret
+        let lwe_secret: Vec<u32> = (0..d).map(|_| rng.random()).collect();
+
+        // RLWE: ternary secret (completely different!)
+        let rlwe_secret = RingElement::random_ternary(d, &mut rng);
+
+        // Verify secrets are actually different
+        assert_ne!(
+            lwe_secret, rlwe_secret.coeffs,
+            "Secrets should be different for this test"
+        );
+
+        let messages: Vec<u32> = vec![42, 17, 99, 5];
+
+        let lwe_cts: Vec<CiphertextOwned> = messages
+            .iter()
+            .map(|&msg| {
+                let a: Vec<u32> = (0..d).map(|_| rng.random()).collect();
+                let c = regev::encrypt(
+                    &params,
+                    &a,
+                    &regev::SecretKey { s: &lwe_secret },
+                    msg,
+                    &mut rng,
+                );
+                CiphertextOwned { a, c }
+            })
+            .collect();
+
+        // Packing key bridges the two secrets
+        let packing_key = gen_packing_key(&lwe_secret, &rlwe_secret, noise_stddev, &mut rng);
+
+        let lwe_refs: Vec<_> = lwe_cts.iter().map(|ct| ct.as_ref()).collect();
+        let rlwe_ct = pack_with_key_switching(&lwe_refs, &packing_key);
+
+        // Decrypt with RLWE secret (not LWE secret!)
+        let decrypted_poly = decrypt_raw(&rlwe_secret, &rlwe_ct);
+        let decoded = decode_packed_result(&decrypted_poly, params.delta(), p);
+
+        assert_eq!(
+            decoded, messages,
+            "Independent secrets packing failed: got {:?}, expected {:?}",
+            decoded, messages
+        );
+    }
+
+    /// Test with ternary RLWE secret of specific Hamming weight
+    #[test]
+    fn test_ternary_hw_secret() {
+        let d = 8;
+        let p = 256u32;
+        let noise_stddev = 2.0;
+        let params = LweParams {
+            n: d,
+            p,
+            noise_stddev,
+        };
+        let mut rng = rand::rng();
+
+        // LWE: uniform random
+        let lwe_secret: Vec<u32> = (0..d).map(|_| rng.random()).collect();
+
+        // RLWE: ternary with specific Hamming weight (half the dimension)
+        let rlwe_secret = RingElement::random_ternary_hw(d, d / 2, &mut rng);
+
+        // Verify Hamming weight
+        let hw: usize = rlwe_secret.coeffs.iter().filter(|&&c| c != 0).count();
+        assert_eq!(hw, d / 2);
+
+        let messages: Vec<u32> = (0..d).map(|_| rng.random_range(0..p)).collect();
+
+        let lwe_cts: Vec<CiphertextOwned> = messages
+            .iter()
+            .map(|&msg| {
+                let a: Vec<u32> = (0..d).map(|_| rng.random()).collect();
+                let c = regev::encrypt(
+                    &params,
+                    &a,
+                    &regev::SecretKey { s: &lwe_secret },
+                    msg,
+                    &mut rng,
+                );
+                CiphertextOwned { a, c }
+            })
+            .collect();
+
+        let packing_key = gen_packing_key(&lwe_secret, &rlwe_secret, noise_stddev, &mut rng);
+        let lwe_refs: Vec<_> = lwe_cts.iter().map(|ct| ct.as_ref()).collect();
+        let rlwe_ct = pack_with_key_switching(&lwe_refs, &packing_key);
+
+        let decrypted_poly = decrypt_raw(&rlwe_secret, &rlwe_ct);
+        let decoded = decode_packed_result(&decrypted_poly, params.delta(), p);
+
+        assert_eq!(decoded, messages);
+    }
+
+    /// Test that heterogeneous packing key has correct structure
+    #[test]
+    fn test_heterogeneous_packing_key_structure() {
+        let n = 4; // LWE dimension
+        let d = 8; // RLWE ring dimension
+        let noise_stddev = 3.2;
+        let mut rng = rand::rng();
+
+        let lwe_secret: Vec<u32> = (0..n).map(|_| rng.random()).collect();
+        let rlwe_secret = RingElement::random_ternary(d, &mut rng);
+
+        let packing_key = gen_packing_key(&lwe_secret, &rlwe_secret, noise_stddev, &mut rng);
+
+        // Should have d key-switching keys (one per position)
+        assert_eq!(packing_key.keys.len(), d);
+        assert_eq!(packing_key.d, d);
+        assert_eq!(packing_key.n, n);
+
+        // Each key should have n components (one per LWE secret element)
+        for (j, ks_key) in packing_key.keys.iter().enumerate() {
+            assert_eq!(
+                ks_key.ks.len(),
+                n,
+                "KS key {} should have {} components",
+                j,
+                n
+            );
+            assert_eq!(ks_key.target_position, j);
+
+            // Each component should have NUM_DIGITS RLWE ciphertexts
+            for ks_component in &ks_key.ks {
+                assert_eq!(ks_component.len(), NUM_DIGITS);
+
+                // Each RLWE ciphertext should have d-dimensional polynomials
+                for ct in ks_component {
+                    assert_eq!(ct.a.coeffs.len(), d);
+                    assert_eq!(ct.c.coeffs.len(), d);
+                }
+            }
+        }
+    }
+
+    /// Test key switching with different LWE/RLWE dimensions (n < d)
+    #[test]
+    fn test_key_switch_different_dimensions() {
+        let n = 4; // LWE dimension
+        let d = 8; // RLWE ring dimension (different!)
+        let p = 256u32;
+        let noise_stddev = 2.0;
+        let lwe_params = LweParams { n, p, noise_stddev };
+        let mut rng = rand::rng();
+
+        let lwe_secret: Vec<u32> = (0..n).map(|_| rng.random()).collect();
+        let rlwe_secret = RingElement::random_ternary(d, &mut rng);
+
+        let message = 42u32;
+        let a: Vec<u32> = (0..n).map(|_| rng.random()).collect();
+        let c = regev::encrypt(
+            &lwe_params,
+            &a,
+            &regev::SecretKey { s: &lwe_secret },
+            message,
+            &mut rng,
+        );
+        let lwe_ct = CiphertextOwned { a: a.clone(), c };
+
+        // Generate KS key for position 0
+        let j = 0;
+        let ks_key = gen_key_switch_key_raw(&lwe_secret, &rlwe_secret, j, noise_stddev, &mut rng);
+
+        // Apply key switching (unified function handles both cases)
+        let rlwe_ct = key_switch(&lwe_ct.as_ref(), &ks_key);
+
+        // Verify dimensions match ring dimension
+        assert_eq!(rlwe_ct.a.coeffs.len(), d);
+        assert_eq!(rlwe_ct.c.coeffs.len(), d);
+
+        // Decrypt and decode
+        let decrypted_poly = decrypt_raw(&rlwe_secret, &rlwe_ct);
+        let decoded = (decrypted_poly.coeffs[j].wrapping_add(lwe_params.delta() / 2)
+            / lwe_params.delta())
+            % p;
+
+        assert_eq!(
+            decoded, message,
+            "Key switch with n={}, d={} failed: got {}, expected {}",
+            n, d, decoded, message
+        );
     }
 }

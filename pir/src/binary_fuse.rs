@@ -43,9 +43,9 @@
 //! - Binary Fuse Filters: <https://arxiv.org/abs/2201.01174>
 //! - Fast Filter paper: <https://github.com/FastFilter/xorfilter>
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::collections::hash_map::DefaultHasher;
 
 // ============================================================================
 // Configuration
@@ -82,7 +82,10 @@ impl std::fmt::Display for BinaryFuseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BinaryFuseError::ConstructionFailed => {
-                write!(f, "Binary Fuse Filter construction failed after max iterations")
+                write!(
+                    f,
+                    "Binary Fuse Filter construction failed after max iterations"
+                )
             }
             BinaryFuseError::EmptyInput => write!(f, "Cannot build filter from empty input"),
             BinaryFuseError::DuplicateKey => write!(f, "Duplicate keys in input"),
@@ -162,7 +165,7 @@ impl BinaryFuseFilter {
     ) -> Result<Self, BinaryFuseError> {
         Self::build_internal(pairs, value_size, true, 0x517cc1b727220a95)
     }
-    
+
     /// Build without duplicate checking - use when you know keys are unique.
     /// This saves significant memory for large datasets.
     pub fn build_unchecked<K: Hash + Eq + Clone>(
@@ -171,7 +174,7 @@ impl BinaryFuseFilter {
     ) -> Result<Self, BinaryFuseError> {
         Self::build_internal(pairs, value_size, false, 0x517cc1b727220a95)
     }
-    
+
     /// Build from fixed-size value arrays - more memory efficient than Vec<u8>.
     /// Use this when values have known fixed size (e.g., [u8; 4] for u32 counts).
     /// Saves ~20 bytes per entry vs Vec<u8>.
@@ -180,7 +183,7 @@ impl BinaryFuseFilter {
     ) -> Result<Self, BinaryFuseError> {
         Self::build_internal_fixed(pairs, N, true, 0x517cc1b727220a95)
     }
-    
+
     /// Build from fixed-size arrays without duplicate checking.
     pub fn build_from_fixed_unchecked<K: Hash + Eq + Clone, const N: usize>(
         pairs: &[(K, [u8; N])],
@@ -188,7 +191,7 @@ impl BinaryFuseFilter {
     ) -> Result<Self, BinaryFuseError> {
         Self::build_internal_fixed(pairs, N, false, rng_seed)
     }
-    
+
     fn build_internal<K: Hash + Eq + Clone>(
         pairs: &[(K, Vec<u8>)],
         value_size: usize,
@@ -200,7 +203,11 @@ impl BinaryFuseFilter {
         }
 
         // Validate all values have correct size (sample check for large datasets)
-        let check_count = if pairs.len() > 10000 { 1000 } else { pairs.len() };
+        let check_count = if pairs.len() > 10000 {
+            1000
+        } else {
+            pairs.len()
+        };
         for (_, v) in pairs.iter().take(check_count) {
             if v.len() != value_size {
                 return Err(BinaryFuseError::ValueSizeMismatch {
@@ -229,9 +236,16 @@ impl BinaryFuseFilter {
         let segment_length_mask = (segment_size - 1) as u32;
 
         // Try construction with different seeds
-        Self::build_with_rng_seed(pairs, value_size, segment_size, filter_size, segment_length_mask, rng_seed)
+        Self::build_with_rng_seed(
+            pairs,
+            value_size,
+            segment_size,
+            filter_size,
+            segment_length_mask,
+            rng_seed,
+        )
     }
-    
+
     /// Internal builder for fixed-size value arrays
     fn build_internal_fixed<K: Hash + Eq + Clone, const N: usize>(
         pairs: &[(K, [u8; N])],
@@ -258,9 +272,16 @@ impl BinaryFuseFilter {
         let filter_size = ARITY * segment_size;
         let segment_length_mask = (segment_size - 1) as u32;
 
-        Self::build_with_rng_seed_fixed(pairs, value_size, segment_size, filter_size, segment_length_mask, rng_seed)
+        Self::build_with_rng_seed_fixed(
+            pairs,
+            value_size,
+            segment_size,
+            filter_size,
+            segment_length_mask,
+            rng_seed,
+        )
     }
-    
+
     /// Build a Binary Fuse Filter with a specific RNG seed for reproducibility.
     ///
     /// This allows building the same filter with the same positions across server restarts.
@@ -271,7 +292,7 @@ impl BinaryFuseFilter {
     ) -> Result<Self, BinaryFuseError> {
         Self::build_internal(pairs, value_size, true, rng_seed)
     }
-    
+
     /// Build with a specific RNG seed, without duplicate checking.
     /// Use when you know keys are unique to save memory on large datasets.
     pub fn build_with_seed_unchecked<K: Hash + Eq + Clone>(
@@ -281,7 +302,7 @@ impl BinaryFuseFilter {
     ) -> Result<Self, BinaryFuseError> {
         Self::build_internal(pairs, value_size, false, rng_seed)
     }
-    
+
     /// Internal: Try building with seeds from a specific RNG
     fn build_with_rng_seed<K: Hash + Eq + Clone>(
         pairs: &[(K, Vec<u8>)],
@@ -296,7 +317,14 @@ impl BinaryFuseFilter {
         for _ in 0..MAX_ITERATIONS {
             let seed = rng.next();
 
-            match Self::try_build(pairs, value_size, segment_size, filter_size, segment_length_mask, seed) {
+            match Self::try_build(
+                pairs,
+                value_size,
+                segment_size,
+                filter_size,
+                segment_length_mask,
+                seed,
+            ) {
                 Ok(filter) => return Ok(filter),
                 Err(_) => continue,
             }
@@ -304,7 +332,7 @@ impl BinaryFuseFilter {
 
         Err(BinaryFuseError::ConstructionFailed)
     }
-    
+
     /// Internal: Try building with seeds for fixed-size arrays
     fn build_with_rng_seed_fixed<K: Hash + Eq + Clone, const N: usize>(
         pairs: &[(K, [u8; N])],
@@ -319,7 +347,14 @@ impl BinaryFuseFilter {
         for _ in 0..MAX_ITERATIONS {
             let seed = rng.next();
 
-            match Self::try_build_fixed(pairs, value_size, segment_size, filter_size, segment_length_mask, seed) {
+            match Self::try_build_fixed(
+                pairs,
+                value_size,
+                segment_size,
+                filter_size,
+                segment_length_mask,
+                seed,
+            ) {
                 Ok(filter) => return Ok(filter),
                 Err(_) => continue,
             }
@@ -329,11 +364,11 @@ impl BinaryFuseFilter {
     }
 
     /// Attempt to build the filter with a specific seed
-    /// 
+    ///
     /// Memory-efficient implementation that avoids O(filter_size) allocation
     /// for slot-to-key mapping. Instead uses a flat sorted array of (slot, key_idx)
     /// pairs which uses O(3*n) memory instead of O(filter_size).
-    /// 
+    ///
     /// For large datasets (e.g., 900M entries):
     /// - Old approach: 1.5B slots * 24 bytes/Vec = 36 GB just for empty Vecs
     /// - New approach: 900M * 3 * 8 bytes = 21.6 GB for the mapping
@@ -360,7 +395,7 @@ impl BinaryFuseFilter {
         // Build degree counters for each slot
         // Memory: filter_size * 4 bytes
         let mut degree = vec![0u32; filter_size];
-        
+
         for positions in positions_vec.iter() {
             for &pos in positions {
                 degree[pos as usize] += 1;
@@ -378,7 +413,7 @@ impl BinaryFuseFilter {
         }
         // Sort by slot for binary search
         slot_key_pairs.sort_unstable_by_key(|&(slot, _)| slot);
-        
+
         // Build index into slot_key_pairs for O(1) slot lookup
         // For each slot, store the starting index in slot_key_pairs
         // Memory: filter_size * 8 bytes (u64 to handle >4B entries)
@@ -418,7 +453,7 @@ impl BinaryFuseFilter {
             // Find the unprocessed key in this slot using the sorted index
             let start = slot_start[slot as usize] as usize;
             let end = slot_start[slot as usize + 1] as usize;
-            
+
             let key_idx = slot_key_pairs[start..end]
                 .iter()
                 .filter(|&&(s, _)| s == slot)
@@ -446,7 +481,7 @@ impl BinaryFuseFilter {
         if stack.len() != n {
             return Err(BinaryFuseError::ConstructionFailed);
         }
-        
+
         // Free memory no longer needed before allocating final data
         drop(slot_key_pairs);
         drop(slot_start);
@@ -476,7 +511,8 @@ impl BinaryFuseFilter {
             }
 
             // Assign to determining slot
-            let slot_data = &mut data[determining_slot_usize * value_size..(determining_slot_usize + 1) * value_size];
+            let slot_data = &mut data
+                [determining_slot_usize * value_size..(determining_slot_usize + 1) * value_size];
             slot_data.copy_from_slice(&xor_value);
         }
 
@@ -490,7 +526,7 @@ impl BinaryFuseFilter {
             num_entries: n,
         })
     }
-    
+
     /// Build filter from fixed-size value arrays - avoids Vec allocation overhead
     fn try_build_fixed<K: Hash + Eq + Clone, const N: usize>(
         pairs: &[(K, [u8; N])],
@@ -501,19 +537,25 @@ impl BinaryFuseFilter {
         seed: u64,
     ) -> Result<Self, BinaryFuseError> {
         let n = pairs.len();
-        
+
         // Helper to log memory in GB
         let log_mem = |label: &str, bytes: usize| {
             let gb = bytes as f64 / 1024.0 / 1024.0 / 1024.0;
             eprintln!("[FILTER-MEM] {}: {:.2} GB", label, gb);
         };
 
-        eprintln!("[FILTER] Starting try_build_fixed: n={}, filter_size={}", n, filter_size);
+        eprintln!(
+            "[FILTER] Starting try_build_fixed: n={}, filter_size={}",
+            n, filter_size
+        );
 
         // MEMORY OPTIMIZATION: Store only positions during peeling phase (12 bytes/entry)
         // Values are accessed directly from input pairs during assignment phase
         // This saves 8 bytes/entry = 16 GB for 2B entries!
-        eprintln!("[FILTER] Allocating positions ({} entries × 12 bytes)...", n);
+        eprintln!(
+            "[FILTER] Allocating positions ({} entries × 12 bytes)...",
+            n
+        );
         log_mem("positions will use", n * 12);
         let mut positions_vec: Vec<[u32; 3]> = Vec::with_capacity(n);
         for (key, _) in pairs {
@@ -524,7 +566,10 @@ impl BinaryFuseFilter {
         eprintln!("[FILTER] positions allocated successfully");
 
         // Build degree counters
-        eprintln!("[FILTER] Allocating degree ({} slots × 4 bytes)...", filter_size);
+        eprintln!(
+            "[FILTER] Allocating degree ({} slots × 4 bytes)...",
+            filter_size
+        );
         log_mem("degree will use", filter_size * 4);
         let mut degree = vec![0u32; filter_size];
         for positions in positions_vec.iter() {
@@ -535,7 +580,10 @@ impl BinaryFuseFilter {
         eprintln!("[FILTER] degree allocated successfully");
 
         // Build flat sorted array of (slot, key_idx)
-        eprintln!("[FILTER] Allocating slot_key_pairs ({} entries × 8 bytes)...", n * 3);
+        eprintln!(
+            "[FILTER] Allocating slot_key_pairs ({} entries × 8 bytes)...",
+            n * 3
+        );
         log_mem("slot_key_pairs will use", n * 3 * 8);
         let mut slot_key_pairs: Vec<(u32, u32)> = Vec::with_capacity(n * 3);
         for (key_idx, positions) in positions_vec.iter().enumerate() {
@@ -546,9 +594,12 @@ impl BinaryFuseFilter {
         eprintln!("[FILTER] slot_key_pairs populated, sorting...");
         slot_key_pairs.sort_unstable_by_key(|&(slot, _)| slot);
         eprintln!("[FILTER] slot_key_pairs sorted successfully");
-        
+
         // Build index - use u64 to handle >4B entries in slot_key_pairs
-        eprintln!("[FILTER] Allocating slot_start ({} entries × 8 bytes)...", filter_size + 1);
+        eprintln!(
+            "[FILTER] Allocating slot_start ({} entries × 8 bytes)...",
+            filter_size + 1
+        );
         log_mem("slot_start will use", (filter_size + 1) * 8);
         let mut slot_start: Vec<u64> = vec![0; filter_size + 1];
         {
@@ -570,13 +621,15 @@ impl BinaryFuseFilter {
         eprintln!("[FILTER] Allocating stack ({} entries × 8 bytes)...", n);
         log_mem("stack will use", n * 8);
         let mut stack: Vec<(u32, u32)> = Vec::with_capacity(n);
-        
+
         eprintln!("[FILTER] Allocating processed ({} entries × 1 byte)...", n);
         log_mem("processed will use", n);
         let mut processed = vec![false; n];
-        
+
         eprintln!("[FILTER] Building initial queue...");
-        let mut queue: Vec<u32> = degree.iter().enumerate()
+        let mut queue: Vec<u32> = degree
+            .iter()
+            .enumerate()
             .filter(|(_, d)| **d == 1)
             .map(|(i, _)| i as u32)
             .collect();
@@ -584,17 +637,22 @@ impl BinaryFuseFilter {
 
         eprintln!("[FILTER] Starting peeling phase...");
         while let Some(slot) = queue.pop() {
-            if degree[slot as usize] != 1 { continue; }
+            if degree[slot as usize] != 1 {
+                continue;
+            }
 
             let start = slot_start[slot as usize] as usize;
             let end = slot_start[slot as usize + 1] as usize;
-            
-            let key_idx = slot_key_pairs[start..end].iter()
+
+            let key_idx = slot_key_pairs[start..end]
+                .iter()
                 .filter(|&&(s, _)| s == slot)
                 .map(|&(_, k)| k)
                 .find(|&idx| !processed[idx as usize]);
 
-            let Some(key_idx) = key_idx else { continue; };
+            let Some(key_idx) = key_idx else {
+                continue;
+            };
 
             processed[key_idx as usize] = true;
             stack.push((key_idx, slot));
@@ -602,15 +660,21 @@ impl BinaryFuseFilter {
             let positions = &positions_vec[key_idx as usize];
             for &pos in positions {
                 degree[pos as usize] = degree[pos as usize].saturating_sub(1);
-                if degree[pos as usize] == 1 { queue.push(pos); }
+                if degree[pos as usize] == 1 {
+                    queue.push(pos);
+                }
             }
         }
-        eprintln!("[FILTER] Peeling complete: processed {} of {} keys", stack.len(), n);
+        eprintln!(
+            "[FILTER] Peeling complete: processed {} of {} keys",
+            stack.len(),
+            n
+        );
 
         if stack.len() != n {
             return Err(BinaryFuseError::ConstructionFailed);
         }
-        
+
         eprintln!("[FILTER] Dropping intermediate structures...");
         drop(slot_key_pairs);
         eprintln!("[FILTER] Dropped slot_key_pairs");
@@ -622,7 +686,10 @@ impl BinaryFuseFilter {
         eprintln!("[FILTER] Dropped processed");
 
         // Assign values - access values directly from input pairs (saves 16 GB by not storing refs)
-        eprintln!("[FILTER] Allocating final data ({} slots × {} bytes)...", filter_size, value_size);
+        eprintln!(
+            "[FILTER] Allocating final data ({} slots × {} bytes)...",
+            filter_size, value_size
+        );
         log_mem("final data will use", filter_size * value_size);
         let mut data = vec![0u8; filter_size * value_size];
         eprintln!("[FILTER] Final data allocated successfully");
@@ -649,7 +716,13 @@ impl BinaryFuseFilter {
         eprintln!("[FILTER] Value assignment complete");
 
         Ok(BinaryFuseFilter {
-            data, segment_size, filter_size, value_size, seed, segment_length_mask, num_entries: n,
+            data,
+            segment_size,
+            filter_size,
+            value_size,
+            seed,
+            segment_length_mask,
+            num_entries: n,
         })
     }
 
@@ -746,9 +819,7 @@ impl BinaryFuseFilter {
     ///
     /// Returns a vector of `filter_size` records, each of `value_size` bytes.
     pub fn as_records(&self) -> Vec<&[u8]> {
-        (0..self.filter_size)
-            .map(|i| self.get_slot(i))
-            .collect()
+        (0..self.filter_size).map(|i| self.get_slot(i)).collect()
     }
 
     /// Verify the filter is correctly constructed (for testing).
@@ -774,7 +845,7 @@ fn hash_key<K: Hash>(key: &K, seed: u64) -> u64 {
     seed.hash(&mut hasher);
     key.hash(&mut hasher);
     let h1 = hasher.finish();
-    
+
     // Mix the hash further with the seed for better distribution
     let h2 = h1.wrapping_mul(0x9e3779b97f4a7c15).wrapping_add(seed);
     h2 ^ (h2 >> 33)
@@ -1018,7 +1089,10 @@ mod tests {
 
         assert!(filter.verify(&pairs), "All lookups should succeed");
         // Small filters have higher expansion due to power-of-2 segment sizes
-        assert!(filter.expansion_factor() < 5.0, "Expansion should be reasonable for small filter");
+        assert!(
+            filter.expansion_factor() < 5.0,
+            "Expansion should be reasonable for small filter"
+        );
     }
 
     #[test]
@@ -1078,7 +1152,10 @@ mod tests {
             let val2 = filter.get_slot(positions.h2);
 
             let decoded = filter.decode(val0, val1, val2);
-            assert_eq!(&decoded, expected_value, "Decode should recover original value");
+            assert_eq!(
+                &decoded, expected_value,
+                "Decode should recover original value"
+            );
         }
     }
 
@@ -1125,10 +1202,13 @@ mod tests {
     fn test_value_size_mismatch() {
         let pairs = vec![
             ("key1".to_string(), vec![1, 2, 3, 4]),
-            ("key2".to_string(), vec![5, 6, 7]),  // Wrong size
+            ("key2".to_string(), vec![5, 6, 7]), // Wrong size
         ];
         let result = BinaryFuseFilter::build(&pairs, 4);
-        assert!(matches!(result.unwrap_err(), BinaryFuseError::ValueSizeMismatch { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            BinaryFuseError::ValueSizeMismatch { .. }
+        ));
     }
 
     #[test]
@@ -1143,9 +1223,7 @@ mod tests {
         // Test with random-looking binary data
         let pairs: Vec<(u64, Vec<u8>)> = (0..500)
             .map(|i| {
-                let value: Vec<u8> = (0..64)
-                    .map(|j| ((i * 7 + j * 13) % 256) as u8)
-                    .collect();
+                let value: Vec<u8> = (0..64).map(|j| ((i * 7 + j * 13) % 256) as u8).collect();
                 (i, value)
             })
             .collect();
@@ -1156,9 +1234,7 @@ mod tests {
 
     #[test]
     fn test_integer_keys() {
-        let pairs: Vec<(u64, Vec<u8>)> = (0..1000)
-            .map(|i| (i, vec![(i % 256) as u8; 8]))
-            .collect();
+        let pairs: Vec<(u64, Vec<u8>)> = (0..1000).map(|i| (i, vec![(i % 256) as u8; 8])).collect();
 
         let filter = BinaryFuseFilter::build(&pairs, 8).expect("Build should succeed");
         assert!(filter.verify(&pairs));
@@ -1372,8 +1448,7 @@ mod tests {
             .collect();
 
         // 2. Server builds Binary Fuse Filter
-        let filter = BinaryFuseFilter::build(&database, 16)
-            .expect("Build should succeed");
+        let filter = BinaryFuseFilter::build(&database, 16).expect("Build should succeed");
 
         // 3. Server converts to PIR database format
         let pir_records = filter.to_pir_records();
@@ -1406,4 +1481,3 @@ mod tests {
         assert_eq!(decoded, expected);
     }
 }
-

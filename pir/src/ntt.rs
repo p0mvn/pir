@@ -243,7 +243,9 @@ pub fn ntt_sub(a: &[u64], b: &[u64]) -> Vec<u64> {
 /// Scalar multiplication in NTT domain.
 pub fn ntt_scalar_mul(a: &[u64], scalar: u64) -> Vec<u64> {
     let scalar_mod = scalar % NTT_PRIME;
-    a.iter().map(|&x| mod_mul(x, scalar_mod, NTT_PRIME)).collect()
+    a.iter()
+        .map(|&x| mod_mul(x, scalar_mod, NTT_PRIME))
+        .collect()
 }
 
 // ============================================================================
@@ -308,10 +310,7 @@ pub fn mod_inv(a: u64, p: u64) -> u64 {
 /// Since NTT_PRIME < 2^32, we just take the coefficient mod NTT_PRIME.
 /// This may lose precision for very large coefficients.
 pub fn u32_to_ntt_coeffs(coeffs: &[u32]) -> Vec<u64> {
-    coeffs
-        .iter()
-        .map(|&c| (c as u64) % NTT_PRIME)
-        .collect()
+    coeffs.iter().map(|&c| (c as u64) % NTT_PRIME).collect()
 }
 
 /// Convert NTT domain coefficients back to u32.

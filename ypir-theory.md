@@ -335,3 +335,34 @@ The striped/shaded components ($H_1$, $H_2$) are **precomputed** and query-indep
 **Silent Preprocessing**: The random matrices $A_1, A_2$ can be derived from a random oracle (hash function). Public parameters are just database dimensions—no large downloads needed.
 
 **Arbitrary Dimensions**: The scheme handles databases where dimensions aren't exact multiples of $d_1, d_2$ by truncating the structured matrices (not padding the database).
+
+---
+
+## LWE vs RLWE Secret Keys
+
+In YPIR, the LWE secret (used for DoublePIR) and RLWE secret (used for decrypting the packed response) **must be independent** for several reasons:
+
+### Different Dimensions
+
+The LWE dimension $n$ and RLWE ring dimension $d$ are typically different. YPIR's standard parameters use $n = 1024$ for LWE (SimplePIR pass) but $d = 2048$ for RLWE (packing). You cannot use a 1024-element LWE secret directly as a 2048-coefficient RLWE secret.
+
+### Different Secret Distributions
+
+| Scheme | Typical Secret | Rationale |
+|--------|---------------|-----------|
+| **LWE** | Uniform random over $\mathbb{Z}_q$ | Simplest, most conservative security assumption |
+| **RLWE** | Ternary $\{-1, 0, 1\}$ or small Gaussian | Better noise growth, faster polynomial operations |
+
+Using a uniform LWE secret as an RLWE secret would cause excessive noise growth during polynomial multiplication (each coefficient multiplies all others), potentially causing decryption failures.
+
+### Security Considerations
+
+Reusing the same secret across LWE and RLWE schemes could enable attacks that exploit correlations between the two ciphertext types. Independent secrets provide defense-in-depth.
+
+### Key Switching Bridges the Gap
+
+The packing key (`PackingKey`) enables this separation. It contains RLWE encryptions of information about the LWE secret:
+
+$$\text{KS}[i][k] = \text{RLWE.Enc}_{s_{RLWE}}(s_{LWE,i} \cdot B^k \cdot x^j)$$
+
+During packing, the server uses these to convert LWE ciphertexts (encrypted under $s_{LWE}$) into RLWE ciphertexts (encrypted under $s_{RLWE}$) without learning either secret. The client generates both secrets independently and includes the packing key in the query.

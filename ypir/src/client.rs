@@ -101,7 +101,6 @@ impl YpirClient {
         let packing_key = gen_packing_key(
             lwe_secret,
             &rlwe_secret,
-            d,
             self.params.packing.noise_stddev,
             rng,
         );
@@ -207,11 +206,7 @@ impl PirClientTrait for YpirClient {
         YpirClient::new(setup, ypir_params)
     }
 
-    fn query(
-        &self,
-        record_idx: usize,
-        rng: &mut impl Rng,
-    ) -> (YpirQueryState, YpirQuery) {
+    fn query(&self, record_idx: usize, rng: &mut impl Rng) -> (YpirQueryState, YpirQuery) {
         self.query(record_idx, rng)
     }
 
@@ -246,7 +241,7 @@ mod tests {
         let rlwe_secret = RingElement::random(d, &mut rng);
 
         // Generate packing key
-        let packing_key = gen_packing_key(&lwe_secret, &rlwe_secret, d, noise_stddev, &mut rng);
+        let packing_key = gen_packing_key(&lwe_secret, &rlwe_secret, noise_stddev, &mut rng);
 
         // Verify structure
         assert_eq!(packing_key.keys.len(), d);
@@ -284,7 +279,7 @@ mod tests {
             .collect();
 
         // Generate packing key
-        let packing_key = gen_packing_key(&lwe_secret, &rlwe_secret, d, noise_stddev, &mut rng);
+        let packing_key = gen_packing_key(&lwe_secret, &rlwe_secret, noise_stddev, &mut rng);
 
         // Pack into RLWE
         let lwe_refs: Vec<_> = lwe_cts.iter().map(|ct| ct.as_ref()).collect();
@@ -329,7 +324,7 @@ mod tests {
             })
             .collect();
 
-        let packing_key = gen_packing_key(&lwe_secret, &rlwe_secret, d, noise_stddev, &mut rng);
+        let packing_key = gen_packing_key(&lwe_secret, &rlwe_secret, noise_stddev, &mut rng);
         let lwe_refs: Vec<_> = lwe_cts.iter().map(|ct| ct.as_ref()).collect();
         let packed = pack_with_key_switching(&lwe_refs, &packing_key);
         let noisy = decrypt_raw(&rlwe_secret, &packed);

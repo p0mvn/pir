@@ -123,9 +123,11 @@ impl DoublePirClient {
         // Validate hint_cross dimensions: record_size × n × n
         let expected_hint_cross_len = setup.record_size * params.n * params.n;
         assert_eq!(
-            setup.hint_cross.len(), expected_hint_cross_len,
+            setup.hint_cross.len(),
+            expected_hint_cross_len,
             "hint_cross length ({}) must equal record_size × n² ({})",
-            setup.hint_cross.len(), expected_hint_cross_len
+            setup.hint_cross.len(),
+            expected_hint_cross_len
         );
 
         // Regenerate matrices from seeds
@@ -150,7 +152,11 @@ impl DoublePirClient {
     ///
     /// The first query (column selection) uses standard Regev encryption with Δ scaling.
     /// The second query (row selection) uses unscaled encryption to avoid Δ² overflow.
-    pub fn query(&self, record_idx: usize, rng: &mut impl Rng) -> (DoublePirQueryState, DoublePirQuery) {
+    pub fn query(
+        &self,
+        record_idx: usize,
+        rng: &mut impl Rng,
+    ) -> (DoublePirQueryState, DoublePirQuery) {
         assert!(record_idx < self.num_records, "Record index out of bounds");
 
         // Convert record index to (row, col) in the record grid
@@ -199,7 +205,10 @@ impl DoublePirClient {
             secret_row,
         };
 
-        let query = DoublePirQuery { query_col, query_row };
+        let query = DoublePirQuery {
+            query_col,
+            query_row,
+        };
 
         (state, query)
     }
@@ -236,18 +245,14 @@ impl DoublePirClient {
 
                 // 1. Remove hint_col contribution: hint_col[target_row * record_size + byte, :] · s_col
                 let hint_col_idx = state.row_idx * self.record_size + byte_idx;
-                let hint_col_contrib = crate::regev::dot_product(
-                    self.hint_col.row(hint_col_idx),
-                    &state.secret_col,
-                );
+                let hint_col_contrib =
+                    crate::regev::dot_product(self.hint_col.row(hint_col_idx), &state.secret_col);
                 let after_col = ans.wrapping_sub(hint_col_contrib);
 
                 // 2. Remove hint_row contribution: Δ × hint_row[target_col * record_size + byte, :] · s_row
                 let hint_row_idx = state.col_idx * self.record_size + byte_idx;
-                let hint_row_contrib = crate::regev::dot_product(
-                    self.hint_row.row(hint_row_idx),
-                    &state.secret_row,
-                );
+                let hint_row_contrib =
+                    crate::regev::dot_product(self.hint_row.row(hint_row_idx), &state.secret_row);
                 let after_row = after_col.wrapping_sub(delta.wrapping_mul(hint_row_contrib));
 
                 // 3. Remove cross term: Σ_j Σ_k hint_cross[byte, j, k] × s_col[j] × s_row[k]
@@ -352,7 +357,11 @@ impl PirClientTrait for DoublePirClient {
         DoublePirClient::new(setup, params)
     }
 
-    fn query(&self, record_idx: usize, rng: &mut impl Rng) -> (DoublePirQueryState, DoublePirQuery) {
+    fn query(
+        &self,
+        record_idx: usize,
+        rng: &mut impl Rng,
+    ) -> (DoublePirQueryState, DoublePirQuery) {
         self.query(record_idx, rng)
     }
 
@@ -372,12 +381,16 @@ impl PirClientTrait for DoublePirClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::matrix_database::DoublePirDatabase;
     use crate::double::DoublePirAnswer;
+    use crate::matrix_database::DoublePirDatabase;
 
     fn create_test_records(n: usize, record_size: usize) -> Vec<Vec<u8>> {
         (0..n)
-            .map(|i| (0..record_size).map(|j| ((i * record_size + j) % 256) as u8).collect())
+            .map(|i| {
+                (0..record_size)
+                    .map(|j| ((i * record_size + j) % 256) as u8)
+                    .collect()
+            })
             .collect()
     }
 
@@ -398,10 +411,26 @@ mod tests {
         };
 
         // Create client with zero A matrices (eliminates A·s terms)
-        let a_col = LweMatrix { data: vec![0u32; 3 * n], rows: 3, cols: n };
-        let a_row = LweMatrix { data: vec![0u32; 3 * n], rows: 3, cols: n };
-        let hint_col = ClientHint { data: vec![0u32; 6 * n], rows: 6, cols: n };
-        let hint_row = ClientHint { data: vec![0u32; 6 * n], rows: 6, cols: n };
+        let a_col = LweMatrix {
+            data: vec![0u32; 3 * n],
+            rows: 3,
+            cols: n,
+        };
+        let a_row = LweMatrix {
+            data: vec![0u32; 3 * n],
+            rows: 3,
+            cols: n,
+        };
+        let hint_col = ClientHint {
+            data: vec![0u32; 6 * n],
+            rows: 6,
+            cols: n,
+        };
+        let hint_row = ClientHint {
+            data: vec![0u32; 6 * n],
+            rows: 6,
+            cols: n,
+        };
         let hint_cross = vec![0u32; 2 * n * n]; // record_size × n × n
 
         let client = DoublePirClient {
@@ -425,7 +454,7 @@ mod tests {
         // query_col[col] = 0 + Δ·u_col[col]
         // query_row[row] = 0 + u_row[row]
         let delta = params.delta();
-        
+
         // Check query_col has Δ at target column
         assert_eq!(query.query_col[0], 0);
         assert_eq!(query.query_col[1], delta);
@@ -437,7 +466,9 @@ mod tests {
         assert_eq!(query.query_row[2], 0);
 
         // Compute answer manually
-        let answer = DoublePirAnswer { data: db.multiply_double(&query.query_col, &query.query_row) };
+        let answer = DoublePirAnswer {
+            data: db.multiply_double(&query.query_col, &query.query_row),
+        };
 
         // With zero hints, recovery should just be round_decode of the answer
         println!("Delta = {}", delta);
@@ -445,7 +476,11 @@ mod tests {
         println!("Expected: Δ × [8, 9] = [{}, {}]", delta * 8, delta * 9);
 
         let recovered = client.recover(&state, &answer);
-        assert_eq!(recovered, vec![8, 9], "Failed to recover with zero matrices");
+        assert_eq!(
+            recovered,
+            vec![8, 9],
+            "Failed to recover with zero matrices"
+        );
     }
 
     #[test]
@@ -476,4 +511,3 @@ mod tests {
         assert_eq!(state.row_idx, 2);
     }
 }
-

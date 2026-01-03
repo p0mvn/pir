@@ -59,7 +59,7 @@ fn log_memory_gb(label: &str, bytes: usize) {
 
 /// Estimate memory for a Vec
 fn vec_memory<T>(v: &[T]) -> usize {
-    std::mem::size_of::<T>() * v.len()
+    std::mem::size_of_val(v)
 }
 
 /// Log a memory checkpoint with description
@@ -285,7 +285,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
     } else {
         (0, 0)
     };
-    
+
     Json(HealthResponse {
         status: "ok",
         ranges_loaded,
@@ -303,7 +303,8 @@ async fn check(
 ) -> Result<Json<CheckResponse>, (StatusCode, String)> {
     let checker = state.checker.as_ref().ok_or((
         StatusCode::SERVICE_UNAVAILABLE,
-        "Direct hash checking disabled in PIR-only mode. Use /pir/query for private lookups.".to_string(),
+        "Direct hash checking disabled in PIR-only mode. Use /pir/query for private lookups."
+            .to_string(),
     ))?;
 
     // Validate hash format
@@ -440,21 +441,26 @@ fn create_pir_demo_database(
 }
 
 /// Create PIR database by consuming CompactChecker data
-/// 
+///
 /// This takes ownership of the checker and frees its ~48 GB of data
 /// after converting to PIR format. Returns cached stats for health endpoint.
-/// 
+///
 /// Memory optimization: Uses [u8; 20] keys directly instead of String,
 /// saving ~61 GB for the full dataset (92 bytes/entry → 24 bytes/entry).
 fn create_pir_demo_database_compact(
     checker: CompactChecker,
-) -> (BinaryFuseParams, DoublePirDatabase, LweParams, hibp::CheckerStats) {
+) -> (
+    BinaryFuseParams,
+    DoublePirDatabase,
+    LweParams,
+    hibp::CheckerStats,
+) {
     log_checkpoint("START: create_pir_demo_database_compact");
 
     // Capture stats before consuming the data
     let stats = checker.stats();
     let total_entries = stats.total_hashes;
-    
+
     info!("Building PIR database with {} entries...", total_entries);
     log_memory_gb("Expected database size", total_entries * 24); // 24 bytes per entry
 
@@ -462,18 +468,18 @@ fn create_pir_demo_database_compact(
     log_checkpoint("Consuming CompactChecker");
     let mut entries = checker.into_data().into_entries();
     log_memory_gb("entries Vec allocated", vec_memory(&entries));
-    
+
     // CRITICAL MEMORY OPTIMIZATION:
     // Instead of collecting into a new Vec (which doubles memory to ~96 GB),
     // we convert in-place. HashEntry and ([u8;20], [u8;4]) are both 24 bytes.
     // This keeps peak memory at ~48 GB instead of ~96 GB.
     log_checkpoint("In-place conversion starting");
-    
+
     // Convert count to little-endian bytes in-place
     for entry in entries.iter_mut() {
         entry.count = u32::from_ne_bytes(entry.count.to_le_bytes());
     }
-    
+
     // Transmute Vec<HashEntry> to Vec<([u8; 20], [u8; 4])>
     let database: Vec<([u8; 20], [u8; 4])> = unsafe {
         let mut entries = std::mem::ManuallyDrop::new(entries);
@@ -483,12 +489,12 @@ fn create_pir_demo_database_compact(
             entries.capacity(),
         )
     };
-    
+
     log_checkpoint("In-place conversion complete");
     log_memory_gb("database Vec", vec_memory(&database));
 
     let (params, db, lwe) = build_pir_from_database_fixed(database);
-    
+
     log_checkpoint("END: create_pir_demo_database_compact");
     (params, db, lwe, stats)
 }
@@ -506,15 +512,15 @@ fn build_pir_from_database_fixed(
     database: Vec<([u8; 20], [u8; 4])>,
 ) -> (BinaryFuseParams, DoublePirDatabase, LweParams) {
     log_checkpoint("START: build_pir_from_database_fixed");
-    
+
     let n = database.len();
     log_memory_gb("Input database", vec_memory(&database));
-    
+
     // Estimate filter memory requirements
     let segment_size = (n as f64 * 1.23 / 3.0).ceil() as usize;
     let filter_size = 3 * segment_size.next_power_of_two();
     let value_size = 4;
-    
+
     info!("Filter construction will allocate:");
     log_memory_gb("  positions (12 bytes/entry)", n * 12); // Optimized: no value refs stored
     log_memory_gb("  slot_key_pairs (8 bytes * 3n)", n * 3 * 8);
@@ -522,10 +528,20 @@ fn build_pir_from_database_fixed(
     log_memory_gb("  degree (4 bytes * filter_size)", filter_size * 4);
     log_memory_gb("  stack (8 bytes * n)", n * 8);
     log_memory_gb("  processed (1 byte * n)", n);
-    log_memory_gb("  final data (value_size * filter_size)", filter_size * value_size);
-    
+    log_memory_gb(
+        "  final data (value_size * filter_size)",
+        filter_size * value_size,
+    );
+
     // Peak = database + positions + slot_key_pairs + slot_start + degree + stack + processed + queue(~degree)
-    let estimated_peak = (n * 24) + (n * 12) + (n * 3 * 8) + (filter_size * 8) + (filter_size * 4) + (n * 8) + n + (filter_size * 4);
+    let estimated_peak = (n * 24)
+        + (n * 12)
+        + (n * 3 * 8)
+        + (filter_size * 8)
+        + (filter_size * 4)
+        + (n * 8)
+        + n
+        + (filter_size * 4);
     log_memory_gb("  ESTIMATED PEAK (all concurrent)", estimated_peak);
 
     log_checkpoint("Starting Binary Fuse Filter construction");
@@ -550,7 +566,7 @@ fn build_pir_from_database_fixed(
     let filter_params = filter.params();
     let record_refs = filter.as_records();
     let db = DoublePirDatabase::new(&record_refs, value_size);
-    
+
     log_checkpoint("Dropping Binary Fuse Filter");
     drop(filter);
     info!("Freed Binary Fuse Filter data");
@@ -575,8 +591,9 @@ fn build_pir_from_database_generic<K: std::hash::Hash + Eq + Clone>(
 
     // Build Binary Fuse Filter with deterministic seed
     // Use unchecked version to skip duplicate detection (saves RAM)
-    let filter = BinaryFuseFilter::build_with_seed_unchecked(&database, value_size, 0xDEADBEEF_CAFEBABE)
-        .expect("Failed to build Binary Fuse Filter");
+    let filter =
+        BinaryFuseFilter::build_with_seed_unchecked(&database, value_size, 0xDEADBEEF_CAFEBABE)
+            .expect("Failed to build Binary Fuse Filter");
 
     // Drop input database - no longer needed
     drop(database);
@@ -595,7 +612,7 @@ fn build_pir_from_database_generic<K: std::hash::Hash + Eq + Clone>(
     // Convert to PIR database
     let record_refs = filter.as_records();
     let db = DoublePirDatabase::new(&record_refs, value_size);
-    
+
     // Drop filter - data copied into PIR matrix
     drop(filter);
     info!("Freed Binary Fuse Filter data");
@@ -617,10 +634,9 @@ fn build_pir_from_database_generic<K: std::hash::Hash + Eq + Clone>(
 #[tokio::main]
 async fn main() {
     // Load .env file if present
-    match dotenvy::dotenv() {
-        Ok(path) => eprintln!("Loaded .env from {:?}", path),
-        Err(_) => {} // .env file is optional
-    }
+    if let Ok(path) = dotenvy::dotenv() {
+        eprintln!("Loaded .env from {:?}", path);
+    } // .env file is optional
 
     // Initialize tracing
     tracing_subscriber::fmt()
@@ -745,18 +761,18 @@ async fn main() {
             info!("Running in disk mode (slower lookups, less memory)");
             password_checker
         };
-        
+
         Checker::Standard(password_checker)
     };
 
     // Initialize PIR if enabled
     // For Compact checker: consume the data to free ~48 GB after PIR is built
-    // For Standard checker: keep the checker for /check endpoint  
+    // For Standard checker: keep the checker for /check endpoint
     let (checker, pir_server, filter_params, lwe_params, cached_stats) = if pir_enabled {
         match checker {
             Checker::Standard(password_checker) => {
                 let (fuse_params, db, lwe_params) = create_pir_demo_database(&password_checker);
-                
+
                 let mut rng = rand::rng();
                 let server = DoublePirServer::new(db, &lwe_params, &mut rng);
 
@@ -765,12 +781,19 @@ async fn main() {
                 info!("  Record size: {} bytes", server.record_size());
                 info!("  LWE dimension: {}", lwe_params.n);
 
-                (Some(Checker::Standard(password_checker)), Some(server), Some(fuse_params), Some(lwe_params), None)
+                (
+                    Some(Checker::Standard(password_checker)),
+                    Some(server),
+                    Some(fuse_params),
+                    Some(lwe_params),
+                    None,
+                )
             }
             Checker::Compact(compact_checker) => {
                 // CONSUME the checker to free ~48 GB RAM after PIR is built
-                let (fuse_params, db, lwe_params, stats) = create_pir_demo_database_compact(compact_checker);
-                
+                let (fuse_params, db, lwe_params, stats) =
+                    create_pir_demo_database_compact(compact_checker);
+
                 let mut rng = rand::rng();
                 let server = DoublePirServer::new(db, &lwe_params, &mut rng);
 
@@ -780,7 +803,13 @@ async fn main() {
                 info!("  LWE dimension: {}", lwe_params.n);
                 info!("  /check disabled - use /pir/query for private lookups");
 
-                (None, Some(server), Some(fuse_params), Some(lwe_params), Some(stats))
+                (
+                    None,
+                    Some(server),
+                    Some(fuse_params),
+                    Some(lwe_params),
+                    Some(stats),
+                )
             }
         }
     } else {

@@ -112,4 +112,3 @@ impl CommunicationCost for DoublePirSetup {
             * std::mem::size_of::<u32>()
     }
 }
-

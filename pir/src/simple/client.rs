@@ -2,7 +2,7 @@ use crate::{
     params::LweParams,
     pir::{Answer, ClientHint, LweMatrix, Query, SetupMessage},
     pir_trait::{CommunicationCost, PirClient as PirClientTrait, PirProtocol},
-    regev::{Ciphertext, SecretKey, decrypt, encrypt},
+    regev::{decrypt, encrypt, Ciphertext, SecretKey},
 };
 use rand::Rng;
 
@@ -395,7 +395,7 @@ mod tests {
         // secret = [10, 20]
         // hint_c[0,:] · s = 1*10 + 2*20 = 50
         let secret = vec![10u32, 20];
-        let hint_dot = 1 * 10 + 2 * 20; // = 50
+        let hint_dot = 10 + 2 * 20; // = 50
 
         // For plaintext = 77:
         // answer[0] = 77*Δ + hint_dot (so after subtracting hint_dot, we get 77*Δ)
@@ -499,4 +499,3 @@ mod tests {
         assert_eq!(client.a.data, expected_a.data);
     }
 }
-

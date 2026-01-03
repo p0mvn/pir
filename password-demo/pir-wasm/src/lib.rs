@@ -9,7 +9,7 @@ use pir::params::LweParams;
 use pir::pir::ClientHint;
 use rand::SeedableRng;
 use serde::{Deserialize, Serialize};
-use sha1::{Sha1, Digest};
+use sha1::{Digest, Sha1};
 use wasm_bindgen::prelude::*;
 
 // Initialize panic hook for better error messages in WASM
@@ -244,32 +244,43 @@ impl PirClient {
         let params: LweParams = lwe_params.into();
         let pir_setup: DoublePirSetup = setup.into();
         let filter_params_native: BinaryFuseParams = filter_params.clone().into();
-        
+
         // Debug: log full seeds and filter params
-        web_sys::console::log_1(&format!(
-            "Full setup seeds: col={:?}, row={:?}",
-            &pir_setup.seed_col,
-            &pir_setup.seed_row
-        ).into());
-        web_sys::console::log_1(&format!(
-            "Filter params: seed={}, segment_size={}, filter_size={}, value_size={}",
-            filter_params_native.seed,
-            filter_params_native.segment_size,
-            filter_params_native.filter_size,
-            filter_params_native.value_size
-        ).into());
-        
+        web_sys::console::log_1(
+            &format!(
+                "Full setup seeds: col={:?}, row={:?}",
+                &pir_setup.seed_col, &pir_setup.seed_row
+            )
+            .into(),
+        );
+        web_sys::console::log_1(
+            &format!(
+                "Filter params: seed={}, segment_size={}, filter_size={}, value_size={}",
+                filter_params_native.seed,
+                filter_params_native.segment_size,
+                filter_params_native.filter_size,
+                filter_params_native.value_size
+            )
+            .into(),
+        );
+
         let inner = DoublePirClient::new(pir_setup, params);
-        
+
         // Debug: log A matrix data from client
-        web_sys::console::log_1(&format!(
-            "A_col first 8 elements: {:?}",
-            inner.get_a_col_data().iter().take(8).collect::<Vec<_>>()
-        ).into());
-        web_sys::console::log_1(&format!(
-            "A_row first 8 elements: {:?}",
-            inner.get_a_row_data().iter().take(8).collect::<Vec<_>>()
-        ).into());
+        web_sys::console::log_1(
+            &format!(
+                "A_col first 8 elements: {:?}",
+                inner.get_a_col_data().iter().take(8).collect::<Vec<_>>()
+            )
+            .into(),
+        );
+        web_sys::console::log_1(
+            &format!(
+                "A_row first 8 elements: {:?}",
+                inner.get_a_row_data().iter().take(8).collect::<Vec<_>>()
+            )
+            .into(),
+        );
 
         // Create RNG from random seed
         let mut seed = [0u8; 32];
@@ -296,16 +307,18 @@ impl PirClient {
     /// Get the 3 record indices for a keyword (hash) query
     #[wasm_bindgen]
     pub fn get_keyword_indices(&self, keyword: &str) -> Vec<usize> {
-        web_sys::console::log_1(&format!(
-            "get_keyword_indices: keyword='{}', filter_seed={}",
-            keyword, self.filter_params.seed
-        ).into());
+        web_sys::console::log_1(
+            &format!(
+                "get_keyword_indices: keyword='{}', filter_seed={}",
+                keyword, self.filter_params.seed
+            )
+            .into(),
+        );
         let kw_query = KeywordQuery::new(&self.filter_params, &keyword);
         let positions = kw_query.record_indices();
-        web_sys::console::log_1(&format!(
-            "get_keyword_indices: computed positions={:?}",
-            positions
-        ).into());
+        web_sys::console::log_1(
+            &format!("get_keyword_indices: computed positions={:?}", positions).into(),
+        );
         positions.to_vec()
     }
 
@@ -313,10 +326,13 @@ impl PirClient {
     #[wasm_bindgen]
     pub fn get_password_indices(&self, password: &str) -> Vec<usize> {
         let hash = Self::hash_password(password);
-        web_sys::console::log_1(&format!(
-            "get_password_indices: password='{}' -> hash='{}'",
-            password, hash
-        ).into());
+        web_sys::console::log_1(
+            &format!(
+                "get_password_indices: password='{}' -> hash='{}'",
+                password, hash
+            )
+            .into(),
+        );
         self.get_keyword_indices(&hash)
     }
 
@@ -350,33 +366,50 @@ impl PirClient {
     #[wasm_bindgen]
     pub fn recover(&self, state_json: &str, answer_json: &str) -> Result<Vec<u8>, JsValue> {
         // Debug: log raw JSON inputs
-        web_sys::console::log_1(&format!("State JSON (first 200 chars): {}", &state_json[..std::cmp::min(200, state_json.len())]).into());
+        web_sys::console::log_1(
+            &format!(
+                "State JSON (first 200 chars): {}",
+                &state_json[..std::cmp::min(200, state_json.len())]
+            )
+            .into(),
+        );
         web_sys::console::log_1(&format!("Answer JSON: {}", answer_json).into());
-        
+
         let js_state: JsQueryState = serde_json::from_str(state_json)
             .map_err(|e| JsValue::from_str(&format!("Failed to parse state: {}", e)))?;
         let js_answer: JsDoublePirAnswer = serde_json::from_str(answer_json)
             .map_err(|e| JsValue::from_str(&format!("Failed to parse answer: {}", e)))?;
 
         // Debug: log answer data and state
-        web_sys::console::log_1(&format!(
-            "Answer data: len={}, values={:?}",
-            js_answer.data.len(),
-            &js_answer.data
-        ).into());
-        web_sys::console::log_1(&format!(
-            "State: col_idx={}, row_idx={}",
-            js_state.col_idx,
-            js_state.row_idx,
-        ).into());
-        web_sys::console::log_1(&format!(
-            "Secret col first 4: {:?}",
-            &js_state.secret_col[..std::cmp::min(4, js_state.secret_col.len())]
-        ).into());
-        web_sys::console::log_1(&format!(
-            "Secret row first 4: {:?}",
-            &js_state.secret_row[..std::cmp::min(4, js_state.secret_row.len())]
-        ).into());
+        web_sys::console::log_1(
+            &format!(
+                "Answer data: len={}, values={:?}",
+                js_answer.data.len(),
+                &js_answer.data
+            )
+            .into(),
+        );
+        web_sys::console::log_1(
+            &format!(
+                "State: col_idx={}, row_idx={}",
+                js_state.col_idx, js_state.row_idx,
+            )
+            .into(),
+        );
+        web_sys::console::log_1(
+            &format!(
+                "Secret col first 4: {:?}",
+                &js_state.secret_col[..std::cmp::min(4, js_state.secret_col.len())]
+            )
+            .into(),
+        );
+        web_sys::console::log_1(
+            &format!(
+                "Secret row first 4: {:?}",
+                &js_state.secret_row[..std::cmp::min(4, js_state.secret_row.len())]
+            )
+            .into(),
+        );
 
         // Manual debug recovery with detailed logging
         let delta = self.inner.delta();
@@ -388,23 +421,36 @@ impl PirClient {
         let hint_cross = self.inner.get_hint_cross();
         let hint_col_cols = self.inner.hint_col_cols();
         let hint_row_cols = self.inner.hint_row_cols();
-        
-        web_sys::console::log_1(&format!(
-            "Recovery params: delta={}, n={}, p={}, record_size={}",
-            delta, n, p, record_size
-        ).into());
-        web_sys::console::log_1(&format!(
-            "Hint dims: hint_col_rows={}, hint_col_cols={}, hint_row_rows={}, hint_row_cols={}",
-            self.inner.hint_col_rows(), hint_col_cols,
-            self.inner.hint_row_rows(), hint_row_cols
-        ).into());
-        web_sys::console::log_1(&format!(
-            "Hint data lens: hint_col={}, hint_row={}, hint_cross={}",
-            hint_col_data.len(), hint_row_data.len(), hint_cross.len()
-        ).into());
+
+        web_sys::console::log_1(
+            &format!(
+                "Recovery params: delta={}, n={}, p={}, record_size={}",
+                delta, n, p, record_size
+            )
+            .into(),
+        );
+        web_sys::console::log_1(
+            &format!(
+                "Hint dims: hint_col_rows={}, hint_col_cols={}, hint_row_rows={}, hint_row_cols={}",
+                self.inner.hint_col_rows(),
+                hint_col_cols,
+                self.inner.hint_row_rows(),
+                hint_row_cols
+            )
+            .into(),
+        );
+        web_sys::console::log_1(
+            &format!(
+                "Hint data lens: hint_col={}, hint_row={}, hint_cross={}",
+                hint_col_data.len(),
+                hint_row_data.len(),
+                hint_cross.len()
+            )
+            .into(),
+        );
 
         let mut result = Vec::with_capacity(record_size);
-        
+
         for byte_idx in 0..record_size {
             // Get the answer value for this byte
             let ans = js_answer.data[byte_idx];
@@ -414,8 +460,9 @@ impl PirClient {
             let hint_col_row_start = hint_col_idx * hint_col_cols;
             let hint_col_row_end = hint_col_row_start + hint_col_cols;
             let hint_col_row = &hint_col_data[hint_col_row_start..hint_col_row_end];
-            
-            let hint_col_contrib: u32 = hint_col_row.iter()
+
+            let hint_col_contrib: u32 = hint_col_row
+                .iter()
                 .zip(js_state.secret_col.iter())
                 .map(|(&h, &s)| h.wrapping_mul(s))
                 .fold(0u32, |acc, x| acc.wrapping_add(x));
@@ -426,8 +473,9 @@ impl PirClient {
             let hint_row_row_start = hint_row_idx * hint_row_cols;
             let hint_row_row_end = hint_row_row_start + hint_row_cols;
             let hint_row_row = &hint_row_data[hint_row_row_start..hint_row_row_end];
-            
-            let hint_row_contrib: u32 = hint_row_row.iter()
+
+            let hint_row_contrib: u32 = hint_row_row
+                .iter()
                 .zip(js_state.secret_row.iter())
                 .map(|(&h, &s)| h.wrapping_mul(s))
                 .fold(0u32, |acc, x| acc.wrapping_add(x));
@@ -441,7 +489,7 @@ impl PirClient {
                     let h = hint_cross[cross_base + j * n + k];
                     cross_contrib = cross_contrib.wrapping_add(
                         h.wrapping_mul(js_state.secret_col[j])
-                         .wrapping_mul(js_state.secret_row[k])
+                            .wrapping_mul(js_state.secret_row[k]),
                     );
                 }
             }
@@ -458,20 +506,29 @@ impl PirClient {
                     "Byte 0 recovery: ans={}, hint_col_contrib={}, after_col={}, hint_row_contrib={}, after_row={}, cross_contrib={}, after_cross={}, decoded={}",
                     ans, hint_col_contrib, after_col, hint_row_contrib, after_row, cross_contrib, after_cross, decoded
                 ).into());
-                
+
                 // Also log hint values for byte 0
-                web_sys::console::log_1(&format!(
-                    "Byte 0 hints: hint_col_idx={}, hint_row_idx={}, cross_base={}",
-                    hint_col_idx, hint_row_idx, cross_base
-                ).into());
-                web_sys::console::log_1(&format!(
-                    "Byte 0 hint_col_row first 4: {:?}",
-                    &hint_col_row[..std::cmp::min(4, hint_col_row.len())]
-                ).into());
-                web_sys::console::log_1(&format!(
-                    "Byte 0 hint_row_row first 4: {:?}",
-                    &hint_row_row[..std::cmp::min(4, hint_row_row.len())]
-                ).into());
+                web_sys::console::log_1(
+                    &format!(
+                        "Byte 0 hints: hint_col_idx={}, hint_row_idx={}, cross_base={}",
+                        hint_col_idx, hint_row_idx, cross_base
+                    )
+                    .into(),
+                );
+                web_sys::console::log_1(
+                    &format!(
+                        "Byte 0 hint_col_row first 4: {:?}",
+                        &hint_col_row[..std::cmp::min(4, hint_col_row.len())]
+                    )
+                    .into(),
+                );
+                web_sys::console::log_1(
+                    &format!(
+                        "Byte 0 hint_row_row first 4: {:?}",
+                        &hint_row_row[..std::cmp::min(4, hint_row_row.len())]
+                    )
+                    .into(),
+                );
             }
 
             result.push(decoded);
@@ -504,17 +561,27 @@ impl PirClient {
     pub fn record_size(&self) -> usize {
         self.inner.record_size()
     }
-    
+
     /// Debug: Get the first few elements of A_col matrix
     #[wasm_bindgen]
     pub fn get_a_col_data(&self) -> Vec<u32> {
-        self.inner.get_a_col_data().iter().take(16).cloned().collect()
+        self.inner
+            .get_a_col_data()
+            .iter()
+            .take(16)
+            .cloned()
+            .collect()
     }
-    
+
     /// Debug: Get the first few elements of A_row matrix
     #[wasm_bindgen]
     pub fn get_a_row_data(&self) -> Vec<u32> {
-        self.inner.get_a_row_data().iter().take(16).cloned().collect()
+        self.inner
+            .get_a_row_data()
+            .iter()
+            .take(16)
+            .cloned()
+            .collect()
     }
 }
 
@@ -549,4 +616,3 @@ mod tests {
         assert_eq!(params.segment_size, decoded.segment_size);
     }
 }
-

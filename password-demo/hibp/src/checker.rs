@@ -199,7 +199,7 @@ impl PasswordChecker {
             }
         }
     }
-    
+
     /// Get a reference to the in-memory cache (if loaded)
     pub fn get_cache(&self) -> Option<&HashMap<String, Vec<(String, u32)>>> {
         self.cache.as_ref()
@@ -215,7 +215,7 @@ pub struct CheckerStats {
 }
 
 /// Compact password checker using binary format
-/// 
+///
 /// Uses ~24 bytes per entry vs ~63 bytes with HashMap+String.
 /// For 2 billion entries: ~48 GB vs ~126 GB.
 pub struct CompactChecker {
@@ -269,7 +269,7 @@ impl CompactChecker {
     pub fn data(&self) -> &CompactHibpData {
         &self.data
     }
-    
+
     /// Consume the checker and return the underlying data
     /// Use this to transfer ownership and free memory after building PIR
     pub fn into_data(self) -> CompactHibpData {

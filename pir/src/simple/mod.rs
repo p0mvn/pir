@@ -7,4 +7,3 @@ mod server;
 
 pub use client::{PirClient, QueryState, SimplePir};
 pub use server::PirServer;
-

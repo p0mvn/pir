@@ -102,7 +102,7 @@ pub fn encrypt(params: &LweParams, a: &[u32], sk: &SecretKey, msg: u32, rng: &mu
     let e = sample_noise(params.noise_stddev, rng);
 
     // c = aᵀs + e + Δμ mod q
-    dot_product(&a, sk.s)
+    dot_product(a, sk.s)
         .wrapping_add(e)
         .wrapping_add(params.delta().wrapping_mul(msg))
 }

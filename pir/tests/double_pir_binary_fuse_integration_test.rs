@@ -87,8 +87,8 @@ fn test_keyword_pir_with_string_keys() {
     let value_size = 8;
 
     // ===== SERVER: Build Binary Fuse Filter =====
-    let filter = BinaryFuseFilter::build(&database, value_size)
-        .expect("Filter construction should succeed");
+    let filter =
+        BinaryFuseFilter::build(&database, value_size).expect("Filter construction should succeed");
 
     println!(
         "Filter: {} entries -> {} slots (expansion: {:.2}x)",
@@ -115,10 +115,7 @@ fn test_keyword_pir_with_string_keys() {
         let kw_query = KeywordQuery::new(&filter_params, &target_key);
         let indices = kw_query.record_indices();
 
-        println!(
-            "Looking up '{}' at positions: {:?}",
-            target_key, indices
-        );
+        println!("Looking up '{}' at positions: {:?}", target_key, indices);
 
         // Client makes 3 DoublePIR queries
         let (state0, query0) = pir_client.query(indices[0], &mut rng);
@@ -342,4 +339,3 @@ fn test_keyword_pir_nonexistent_key() {
         nonexistent_key, decoded, matches_any
     );
 }
-

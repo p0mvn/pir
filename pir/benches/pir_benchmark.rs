@@ -1,4 +1,4 @@
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use pir::double::{DoublePirClient, DoublePirServer};
 use pir::matrix_database::{DoublePirDatabase, MatrixDatabase};
 use pir::params::LweParams;

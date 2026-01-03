@@ -62,13 +62,13 @@ impl NttRingElement {
     /// Complexity: O(n log n)
     pub fn from_coeffs(coeffs: &[u32], params: Arc<NttParams>) -> Self {
         assert_eq!(coeffs.len(), params.d);
-        
+
         // Convert u32 → u64 mod NTT_PRIME
         let mut ntt_coeffs = ntt::u32_to_ntt_coeffs(coeffs);
-        
+
         // Forward NTT
         ntt::ntt_forward(&mut ntt_coeffs, &params);
-        
+
         Self { ntt_coeffs, params }
     }
 
@@ -328,6 +328,64 @@ impl RingElement {
         Self { coeffs }
     }
 
+    /// Ternary polynomial: coefficients uniformly sampled from {-1, 0, 1}.
+    ///
+    /// Used for RLWE secret keys in YPIR. Ternary secrets provide:
+    /// - Better noise growth during polynomial multiplication
+    /// - Faster operations (sparse structure can be exploited)
+    /// - Standard security assumption for Ring-LWE
+    ///
+    /// # Arguments
+    /// * `d` - Ring dimension (number of coefficients)
+    /// * `rng` - Random number generator
+    pub fn random_ternary(d: usize, rng: &mut impl rand::Rng) -> Self {
+        let coeffs: Vec<u32> = (0..d)
+            .map(|_| {
+                match rng.random_range(0..3u32) {
+                    0 => 0u32,
+                    1 => 1u32,
+                    _ => u32::MAX, // -1 mod 2^32
+                }
+            })
+            .collect();
+        Self { coeffs }
+    }
+
+    /// Ternary polynomial with specified Hamming weight.
+    ///
+    /// Creates a polynomial with exactly `weight` non-zero coefficients,
+    /// each uniformly chosen to be +1 or -1. Remaining coefficients are 0.
+    ///
+    /// This is useful for RLWE secrets where you want precise control
+    /// over the number of non-zero elements (affects security/noise tradeoff).
+    ///
+    /// # Arguments
+    /// * `d` - Ring dimension
+    /// * `weight` - Number of non-zero coefficients (must be ≤ d)
+    /// * `rng` - Random number generator
+    pub fn random_ternary_hw(d: usize, weight: usize, rng: &mut impl rand::Rng) -> Self {
+        use rand::seq::SliceRandom;
+
+        assert!(weight <= d, "Hamming weight cannot exceed dimension");
+
+        let mut coeffs = vec![0u32; d];
+
+        // Select `weight` random positions
+        let mut positions: Vec<usize> = (0..d).collect();
+        positions.shuffle(rng);
+
+        for &pos in positions.iter().take(weight) {
+            // Randomly +1 or -1
+            coeffs[pos] = if rng.random_bool(0.5) {
+                1u32
+            } else {
+                u32::MAX // -1 mod 2^32
+            };
+        }
+
+        Self { coeffs }
+    }
+
     /// Multiply using NTT (O(n log n) instead of O(n²)).
     ///
     /// **Note**: This uses the NTT-friendly prime q = 2013265921 instead of 2^32.
@@ -573,10 +631,10 @@ mod tests {
 
         // Use values that produce small positive results
         let a = RingElement {
-            coeffs: vec![1, 1, 0, 0],  // 1 + x
+            coeffs: vec![1, 1, 0, 0], // 1 + x
         };
         let b = RingElement {
-            coeffs: vec![1, 1, 0, 0],  // 1 + x
+            coeffs: vec![1, 1, 0, 0], // 1 + x
         };
 
         let schoolbook = a.mul(&b);
@@ -643,10 +701,10 @@ mod tests {
 
         // Use values that produce small positive results
         let a = RingElement {
-            coeffs: vec![1, 1, 0, 0],  // 1 + x
+            coeffs: vec![1, 1, 0, 0], // 1 + x
         };
         let b = RingElement {
-            coeffs: vec![1, 1, 0, 0],  // 1 + x
+            coeffs: vec![1, 1, 0, 0], // 1 + x
         };
 
         // (1+x)² = 1 + 2x + x²
@@ -714,7 +772,7 @@ mod tests {
 
         let a_ntt = a.to_ntt(params.clone());
         let neg_ntt = a_ntt.neg();
-        
+
         // a + (-a) should be zero
         let sum_ntt = a_ntt.add(&neg_ntt);
         let sum = sum_ntt.to_ring_element();
@@ -784,6 +842,137 @@ mod tests {
             // Verify correctness
             let expected = key.mul_ntt(&input, &params);
             assert_eq!(_result.coeffs, expected.coeffs);
+        }
+    }
+
+    // ========================================================================
+    // Ternary Secret Tests
+    // ========================================================================
+
+    #[test]
+    fn test_random_ternary_values() {
+        let d = 64;
+        let mut rng = rand::rng();
+        let poly = RingElement::random_ternary(d, &mut rng);
+
+        assert_eq!(poly.coeffs.len(), d);
+
+        // Every coefficient should be 0, 1, or -1 (u32::MAX)
+        for &coeff in &poly.coeffs {
+            assert!(
+                coeff == 0 || coeff == 1 || coeff == u32::MAX,
+                "Coefficient {} is not ternary",
+                coeff
+            );
+        }
+    }
+
+    #[test]
+    fn test_random_ternary_distribution() {
+        let d = 1000usize;
+        let mut rng = rand::rng();
+        let poly = RingElement::random_ternary(d, &mut rng);
+
+        // Count occurrences
+        let mut count_zero: usize = 0;
+        let mut count_plus: usize = 0;
+        let mut count_minus: usize = 0;
+
+        for &coeff in &poly.coeffs {
+            match coeff {
+                0 => count_zero += 1,
+                1 => count_plus += 1,
+                _ if coeff == u32::MAX => count_minus += 1,
+                _ => panic!("Non-ternary coefficient"),
+            }
+        }
+
+        // Each should be roughly 1/3 of total (allow 10% tolerance)
+        let expected = d / 3;
+        let tolerance = d / 10;
+
+        assert!(
+            count_zero.abs_diff(expected) < tolerance,
+            "Zero count {} too far from expected {}",
+            count_zero,
+            expected
+        );
+        assert!(
+            count_plus.abs_diff(expected) < tolerance,
+            "Plus count {} too far from expected {}",
+            count_plus,
+            expected
+        );
+        assert!(
+            count_minus.abs_diff(expected) < tolerance,
+            "Minus count {} too far from expected {}",
+            count_minus,
+            expected
+        );
+    }
+
+    #[test]
+    fn test_random_ternary_hw_exact_weight() {
+        let d = 64;
+        let weight = 20;
+        let mut rng = rand::rng();
+
+        let poly = RingElement::random_ternary_hw(d, weight, &mut rng);
+
+        assert_eq!(poly.coeffs.len(), d);
+
+        // Count non-zero coefficients
+        let nonzero_count = poly.coeffs.iter().filter(|&&c| c != 0).count();
+        assert_eq!(nonzero_count, weight);
+
+        // All non-zero should be +1 or -1
+        for &coeff in &poly.coeffs {
+            assert!(
+                coeff == 0 || coeff == 1 || coeff == u32::MAX,
+                "Coefficient {} is not ternary",
+                coeff
+            );
+        }
+    }
+
+    #[test]
+    fn test_random_ternary_hw_edge_cases() {
+        let d = 16;
+        let mut rng = rand::rng();
+
+        // All zeros
+        let poly_zero = RingElement::random_ternary_hw(d, 0, &mut rng);
+        assert!(poly_zero.coeffs.iter().all(|&c| c == 0));
+
+        // All non-zero
+        let poly_full = RingElement::random_ternary_hw(d, d, &mut rng);
+        assert!(poly_full.coeffs.iter().all(|&c| c == 1 || c == u32::MAX));
+    }
+
+    #[test]
+    fn test_ternary_mul_produces_small_coeffs() {
+        // Multiplying two ternary polynomials should produce coefficients
+        // bounded by d (the ring dimension)
+        let d = 8;
+        let mut rng = rand::rng();
+
+        let a = RingElement::random_ternary(d, &mut rng);
+        let b = RingElement::random_ternary(d, &mut rng);
+
+        let c = a.mul(&b);
+
+        // Each coefficient is a sum of at most d products of ±1 or 0
+        // So |c_i| ≤ d
+        for &coeff in &c.coeffs {
+            let signed = coeff as i32;
+            // Handle wraparound: if > 2^31, it's negative
+            let abs_val = if signed < 0 { -signed } else { signed };
+            assert!(
+                (abs_val as usize) <= d,
+                "Coefficient {} exceeds bound {}",
+                signed,
+                d
+            );
         }
     }
 }

@@ -39,10 +39,7 @@ pub trait PirClient: Sized {
     type Protocol: PirProtocol;
 
     /// Initialize client from server's setup data
-    fn from_setup(
-        setup: <Self::Protocol as PirProtocol>::SetupData,
-        params: LweParams,
-    ) -> Self;
+    fn from_setup(setup: <Self::Protocol as PirProtocol>::SetupData, params: LweParams) -> Self;
 
     /// Generate a query for the given record index.
     ///
@@ -178,9 +175,9 @@ mod tests {
     /// Test that SimplePIR works through the trait interface
     #[test]
     fn test_simple_pir_via_trait() {
-        use crate::simple::PirClient as SimplePirClient;
         use crate::matrix_database::MatrixDatabase;
         use crate::params::LweParams;
+        use crate::simple::PirClient as SimplePirClient;
         use crate::simple::PirServer as SimplePirServer;
 
         // Create test database
@@ -249,4 +246,3 @@ mod tests {
         assert_eq!(answer_size, setup.db_rows * 4);
     }
 }
-

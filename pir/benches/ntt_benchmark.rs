@@ -4,7 +4,7 @@
 //!
 //! Run with: `cargo bench --bench ntt_benchmark`
 
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use pir::ntt::NttParams;
 use pir::ring::RingElement;
 use std::sync::Arc;
@@ -95,13 +95,9 @@ fn bench_ntt_transform(c: &mut Criterion) {
 
         // Inverse transform: NTT domain → coefficient
         let a_ntt = a.to_ntt(ntt_params.clone());
-        group.bench_with_input(
-            BenchmarkId::new("inverse", d),
-            &a_ntt,
-            |bench, a_ntt| {
-                bench.iter(|| a_ntt.to_ring_element());
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("inverse", d), &a_ntt, |bench, a_ntt| {
+            bench.iter(|| a_ntt.to_ring_element());
+        });
     }
 
     group.finish();

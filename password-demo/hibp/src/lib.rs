@@ -22,19 +22,21 @@
 //! }
 //! ```
 
-mod downloader;
 mod checker;
 mod compact;
+mod downloader;
 mod error;
 
-pub use downloader::{DownloadSize, Downloader, DownloadProgress, InMemoryDownloader, CompactDownloader};
-pub use checker::{PasswordChecker, CheckerStats, CompactChecker};
+pub use checker::{CheckerStats, CompactChecker, PasswordChecker};
 pub use compact::{CompactHibpData, HashEntry};
+pub use downloader::{
+    CompactDownloader, DownloadProgress, DownloadSize, Downloader, InMemoryDownloader,
+};
 pub use error::Error;
 
 /// SHA-1 hash a password and return uppercase hex string
 pub fn hash_password(password: &str) -> String {
-    use sha1::{Sha1, Digest};
+    use sha1::{Digest, Sha1};
     let mut hasher = Sha1::new();
     hasher.update(password.as_bytes());
     let result = hasher.finalize();

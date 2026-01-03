@@ -120,7 +120,7 @@ impl MatrixDatabase {
 
         // Number of row "bands"
         // It can differ from the number of columns when N is not a perfect square.
-        let num_groups = (num_records + records_per_group - 1) / records_per_group;
+        let num_groups = num_records.div_ceil(records_per_group);
 
         let cols = records_per_group;
         let rows = record_size * num_groups;
@@ -198,7 +198,7 @@ impl DoublePirDatabase {
 
         // √N for both dimensions
         let sqrt_n = (num_records as f64).sqrt().ceil() as usize;
-        let num_rows = (num_records + sqrt_n - 1) / sqrt_n; // ceil(N / √N)
+        let num_rows = num_records.div_ceil(sqrt_n); // ceil(N / √N)
         let num_cols = sqrt_n;
 
         // Storage: num_rows × num_cols × record_size
@@ -413,8 +413,8 @@ mod tests {
         // group 2: R6     R7     R8      (rows 4-5)
 
         // R0 = [0,1] at column 0, rows 0-1
-        assert_eq!(db.data[0 * 3 + 0], 0); // row 0, col 0
-        assert_eq!(db.data[1 * 3 + 0], 1); // row 1, col 0
+        assert_eq!(db.data[0], 0); // row 0, col 0
+        assert_eq!(db.data[3], 1); // row 1, col 0
 
         // R4 = [8,9] at column 1, rows 2-3 (group 1)
         assert_eq!(db.data[2 * 3 + 1], 8); // row 2, col 1
@@ -449,8 +449,8 @@ mod tests {
         // group 2: R8     R9     (0)    (0)     (rows 4-5)
 
         // R0 = [0,1] at column 0
-        assert_eq!(db.data[0 * 4 + 0], 0);
-        assert_eq!(db.data[1 * 4 + 0], 1);
+        assert_eq!(db.data[0], 0);
+        assert_eq!(db.data[4], 1);
 
         // R7 = [14,15] at column 3, group 1 (rows 2-3)
         assert_eq!(db.data[2 * 4 + 3], 14);
@@ -788,7 +788,10 @@ mod tests {
             query_row[row] = 1;
 
             let result = db.multiply_double(&query_col, &query_row);
-            let expected = records[rec_idx].iter().map(|&b| b as u32).collect::<Vec<_>>();
+            let expected = records[rec_idx]
+                .iter()
+                .map(|&b| b as u32)
+                .collect::<Vec<_>>();
 
             assert_eq!(
                 result, expected,
@@ -823,7 +826,10 @@ mod tests {
             query_row[row] = 1;
 
             let double_result = double_db.multiply_double(&query_col, &query_row);
-            let expected = records[rec_idx].iter().map(|&b| b as u32).collect::<Vec<_>>();
+            let expected = records[rec_idx]
+                .iter()
+                .map(|&b| b as u32)
+                .collect::<Vec<_>>();
 
             assert_eq!(double_result, expected);
         }
@@ -869,7 +875,10 @@ mod tests {
             query_row[row] = 1;
 
             let result = db.multiply_double(&query_col, &query_row);
-            let expected = records[rec_idx].iter().map(|&b| b as u32).collect::<Vec<_>>();
+            let expected = records[rec_idx]
+                .iter()
+                .map(|&b| b as u32)
+                .collect::<Vec<_>>();
 
             assert_eq!(result, expected, "Failed for record {rec_idx}");
         }

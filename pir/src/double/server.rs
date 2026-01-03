@@ -46,8 +46,14 @@ impl DoublePirServer {
         assert!(params.p > 0, "Plaintext modulus must be positive");
 
         // Validate database dimensions
-        assert!(db.num_cols > 0, "Database must have positive number of columns");
-        assert!(db.num_rows > 0, "Database must have positive number of rows");
+        assert!(
+            db.num_cols > 0,
+            "Database must have positive number of columns"
+        );
+        assert!(
+            db.num_rows > 0,
+            "Database must have positive number of rows"
+        );
         assert!(db.record_size > 0, "Record size must be positive");
 
         // Generate seeds for both matrices
@@ -112,14 +118,18 @@ impl DoublePirServer {
     pub fn answer(&self, query: &DoublePirQuery) -> DoublePirAnswer {
         // Validate query dimensions
         assert_eq!(
-            query.query_col.len(), self.db.num_cols,
+            query.query_col.len(),
+            self.db.num_cols,
             "query_col length ({}) must match database columns ({})",
-            query.query_col.len(), self.db.num_cols
+            query.query_col.len(),
+            self.db.num_cols
         );
         assert_eq!(
-            query.query_row.len(), self.db.num_rows,
+            query.query_row.len(),
+            self.db.num_rows,
             "query_row length ({}) must match database rows ({})",
-            query.query_row.len(), self.db.num_rows
+            query.query_row.len(),
+            self.db.num_rows
         );
 
         // Stage 1: For each (row, byte), compute dot product with query_col
@@ -176,7 +186,11 @@ mod tests {
 
     fn create_test_records(n: usize, record_size: usize) -> Vec<Vec<u8>> {
         (0..n)
-            .map(|i| (0..record_size).map(|j| ((i * record_size + j) % 256) as u8).collect())
+            .map(|i| {
+                (0..record_size)
+                    .map(|j| ((i * record_size + j) % 256) as u8)
+                    .collect()
+            })
             .collect()
     }
 
@@ -533,7 +547,8 @@ mod tests {
 
         // Simulate network: serialize setup
         let setup_bytes = bincode::serialize(&setup).unwrap();
-        let setup_received: crate::double::DoublePirSetup = bincode::deserialize(&setup_bytes).unwrap();
+        let setup_received: crate::double::DoublePirSetup =
+            bincode::deserialize(&setup_bytes).unwrap();
 
         // Client creates query
         let client = DoublePirClient::new(setup_received, params);
@@ -549,7 +564,8 @@ mod tests {
 
         // Simulate network: serialize answer
         let answer_bytes = bincode::serialize(&answer).unwrap();
-        let answer_received: crate::double::DoublePirAnswer = bincode::deserialize(&answer_bytes).unwrap();
+        let answer_received: crate::double::DoublePirAnswer =
+            bincode::deserialize(&answer_bytes).unwrap();
 
         // Client recovers
         let recovered = client.recover(&state, &answer_received);
@@ -585,9 +601,21 @@ mod tests {
         let answer_cost = answer.size_bytes();
         let setup_cost = setup.size_bytes();
 
-        println!("Query: serialized={}, estimated={}", query_bytes.len(), query_cost);
-        println!("Answer: serialized={}, estimated={}", answer_bytes.len(), answer_cost);
-        println!("Setup: serialized={}, estimated={}", setup_bytes.len(), setup_cost);
+        println!(
+            "Query: serialized={}, estimated={}",
+            query_bytes.len(),
+            query_cost
+        );
+        println!(
+            "Answer: serialized={}, estimated={}",
+            answer_bytes.len(),
+            answer_cost
+        );
+        println!(
+            "Setup: serialized={}, estimated={}",
+            setup_bytes.len(),
+            setup_cost
+        );
 
         // Allow some overhead for bincode length prefixes
         assert!(query_bytes.len() <= query_cost + 32);
@@ -615,7 +643,8 @@ mod tests {
         // Simulate JSON serialization/deserialization like WASM does
         let setup_json = serde_json::to_string(&setup).unwrap();
         println!("Setup JSON length: {} bytes", setup_json.len());
-        let setup_received: crate::double::DoublePirSetup = serde_json::from_str(&setup_json).unwrap();
+        let setup_received: crate::double::DoublePirSetup =
+            serde_json::from_str(&setup_json).unwrap();
 
         // Client creates query
         let client = DoublePirClient::new(setup_received, params);
@@ -632,11 +661,12 @@ mod tests {
         // Serialize answer via JSON
         let answer_json = serde_json::to_string(&answer).unwrap();
         println!("Answer JSON: {}", answer_json);
-        let answer_received: crate::double::DoublePirAnswer = serde_json::from_str(&answer_json).unwrap();
+        let answer_received: crate::double::DoublePirAnswer =
+            serde_json::from_str(&answer_json).unwrap();
 
         // Client recovers
         let recovered = client.recover(&state, &answer_received);
-        
+
         println!("Expected: {:?}", records[target_idx]);
         println!("Recovered: {:?}", recovered);
 
@@ -648,13 +678,13 @@ mod tests {
     fn test_a_matrix_from_specific_seed() {
         // Use the same seed as the demo server
         let seed_col: [u8; 32] = [
-            26, 233, 94, 103, 221, 251, 149, 36, 32, 7, 43, 22, 27, 35, 28, 49,
-            183, 63, 181, 37, 128, 126, 176, 0, 102, 94, 118, 43, 56, 23, 99, 36
+            26, 233, 94, 103, 221, 251, 149, 36, 32, 7, 43, 22, 27, 35, 28, 49, 183, 63, 181, 37,
+            128, 126, 176, 0, 102, 94, 118, 43, 56, 23, 99, 36,
         ];
         let a_col = LweMatrix::from_seed(&seed_col, 20, 64);
-        
+
         println!("A_col first 8 elements: {:?}", &a_col.data[..8]);
-        
+
         // These values should match what WASM generates
         assert!(a_col.data.len() == 20 * 64);
     }
@@ -693,14 +723,21 @@ mod tests {
 
         let server = DoublePirServer::new(db, &params, &mut rng);
         let setup = server.setup();
-        
-        println!("Seeds: col={:?}, row={:?}", 
-            &setup.seed_col[..8], &setup.seed_row[..8]);
-        println!("Grid: {}x{}, records={}", setup.num_cols, setup.num_rows, setup.num_records);
+
+        println!(
+            "Seeds: col={:?}, row={:?}",
+            &setup.seed_col[..8],
+            &setup.seed_row[..8]
+        );
+        println!(
+            "Grid: {}x{}, records={}",
+            setup.num_cols, setup.num_rows, setup.num_records
+        );
 
         // Simulate JSON serialization like WASM
         let setup_json = serde_json::to_string(&setup).unwrap();
-        let setup_received: crate::double::DoublePirSetup = serde_json::from_str(&setup_json).unwrap();
+        let setup_received: crate::double::DoublePirSetup =
+            serde_json::from_str(&setup_json).unwrap();
 
         let client = DoublePirClient::new(setup_received, params);
 
@@ -711,40 +748,55 @@ mod tests {
         println!("Keyword '{}' positions: {:?}", keyword, positions);
 
         let expected_value = 43 * 100; // (42 + 1) * 100 = 4300
-        println!("Expected value: {} = {:?}", expected_value, (expected_value as u32).to_le_bytes());
+        println!(
+            "Expected value: {} = {:?}",
+            expected_value,
+            expected_value.to_le_bytes()
+        );
 
         // Query each position
         let mut recovered_records = Vec::new();
-        for (i, &pos) in positions.iter().enumerate() {
+        for (_i, &pos) in positions.iter().enumerate() {
             let (state, query) = client.query(pos, &mut rng);
-            
+
             // JSON round-trip the query
             let query_json = serde_json::to_string(&query).unwrap();
             let query_received: DoublePirQuery = serde_json::from_str(&query_json).unwrap();
-            
+
             let answer = server.answer(&query_received);
-            
+
             // JSON round-trip the answer
             let answer_json = serde_json::to_string(&answer).unwrap();
-            let answer_received: crate::double::DoublePirAnswer = serde_json::from_str(&answer_json).unwrap();
-            
+            let answer_received: crate::double::DoublePirAnswer =
+                serde_json::from_str(&answer_json).unwrap();
+
             let recovered = client.recover(&state, &answer_received);
-            println!("Position {} (col={}, row={}): answer={:?}, recovered={:?}",
-                pos, state.col_idx, state.row_idx, answer.data, recovered);
+            println!(
+                "Position {} (col={}, row={}): answer={:?}, recovered={:?}",
+                pos, state.col_idx, state.row_idx, answer.data, recovered
+            );
             recovered_records.push(recovered);
         }
 
         // XOR the three records
-        let final_result: Vec<u8> = recovered_records[0].iter()
+        let final_result: Vec<u8> = recovered_records[0]
+            .iter()
             .zip(recovered_records[1].iter())
             .zip(recovered_records[2].iter())
             .map(|((&a, &b), &c)| a ^ b ^ c)
             .collect();
 
-        let result_value = u32::from_le_bytes([final_result[0], final_result[1], final_result[2], final_result[3]]);
+        let result_value = u32::from_le_bytes([
+            final_result[0],
+            final_result[1],
+            final_result[2],
+            final_result[3],
+        ]);
         println!("Final XOR result: {:?} = {}", final_result, result_value);
-        
-        assert_eq!(result_value, expected_value, "Recovered value should match expected");
+
+        assert_eq!(
+            result_value, expected_value,
+            "Recovered value should match expected"
+        );
     }
 }
-

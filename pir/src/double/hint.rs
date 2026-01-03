@@ -149,7 +149,11 @@ mod tests {
 
     fn create_test_records(n: usize, record_size: usize) -> Vec<Vec<u8>> {
         (0..n)
-            .map(|i| (0..record_size).map(|j| ((i * record_size + j) % 256) as u8).collect())
+            .map(|i| {
+                (0..record_size)
+                    .map(|j| ((i * record_size + j) % 256) as u8)
+                    .collect()
+            })
             .collect()
     }
 
@@ -218,4 +222,3 @@ mod tests {
         assert_eq!(hint_cross.len(), 4 * 8 * 8);
     }
 }
-

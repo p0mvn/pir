@@ -26,12 +26,12 @@
 use rand::Rng;
 
 use crate::{
-    simple::PirClient as SimplePirClient,
     double::{DoublePirClient, DoublePirServer, DoublePirSetup},
     matrix_database::{DoublePirDatabase, MatrixDatabase},
     params::LweParams,
     pir::SetupMessage as SimplePirSetup,
     pir_trait::{CommunicationCost, PirCosts, PirMode},
+    simple::PirClient as SimplePirClient,
     simple::PirServer as SimplePirServer,
 };
 
@@ -397,15 +397,25 @@ impl UnifiedClient {
     }
 
     /// Generate a query for the given record index
-    pub fn query(&self, record_idx: usize, rng: &mut impl Rng) -> (UnifiedQueryState, UnifiedQuery) {
+    pub fn query(
+        &self,
+        record_idx: usize,
+        rng: &mut impl Rng,
+    ) -> (UnifiedQueryState, UnifiedQuery) {
         match self {
             UnifiedClient::Simple(c) => {
                 let (state, query) = c.query(record_idx, rng);
-                (UnifiedQueryState::Simple(state), UnifiedQuery::Simple(query))
+                (
+                    UnifiedQueryState::Simple(state),
+                    UnifiedQuery::Simple(query),
+                )
             }
             UnifiedClient::Double(c) => {
                 let (state, query) = c.query(record_idx, rng);
-                (UnifiedQueryState::Double(state), UnifiedQuery::Double(query))
+                (
+                    UnifiedQueryState::Double(state),
+                    UnifiedQuery::Double(query),
+                )
             }
         }
     }
@@ -504,11 +514,7 @@ mod tests {
 
     fn create_test_records(count: usize, size: usize) -> Vec<Vec<u8>> {
         (0..count)
-            .map(|i| {
-                (0..size)
-                    .map(|j| ((i * size + j) % 256) as u8)
-                    .collect()
-            })
+            .map(|i| (0..size).map(|j| ((i * size + j) % 256) as u8).collect())
             .collect()
     }
 
@@ -675,7 +681,11 @@ mod tests {
             let answer = server.answer(&query);
             let recovered = client.recover(&state, &answer);
 
-            assert_eq!(recovered, records[target_idx], "Failed for record {}", target_idx);
+            assert_eq!(
+                recovered, records[target_idx],
+                "Failed for record {}",
+                target_idx
+            );
         }
     }
 
@@ -763,12 +773,7 @@ mod tests {
             let answer = server.answer(&query);
             let recovered = client.recover(&state, &answer);
 
-            assert_eq!(
-                recovered,
-                records[target_idx],
-                "Failed for mode {:?}",
-                mode
-            );
+            assert_eq!(recovered, records[target_idx], "Failed for mode {:?}", mode);
         }
     }
 
@@ -801,5 +806,3 @@ mod tests {
         assert_eq!(costs.double.answer_bytes, 32 * 4);
     }
 }
-
-

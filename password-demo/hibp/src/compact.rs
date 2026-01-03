@@ -3,12 +3,11 @@
 //! Uses a single sorted array of (hash, count) pairs for minimal memory usage.
 //! Memory: ~24 bytes per entry vs ~63 bytes with HashMap+String approach.
 
-
 /// SHA-1 hash as raw bytes (20 bytes)
 pub type HashBytes = [u8; 20];
 
 /// A single entry: full SHA-1 hash + breach count
-/// 
+///
 /// Memory layout: 24 bytes total (20 byte hash + 4 byte count)
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
@@ -25,10 +24,10 @@ impl HashEntry {
 }
 
 /// Compact storage for HIBP password hashes
-/// 
+///
 /// Stores all hashes in a single sorted vector for efficient binary search.
 /// Memory usage: ~24 bytes per entry (vs ~63 bytes with HashMap+String).
-/// 
+///
 /// For the full HIBP database (~2 billion entries):
 /// - This approach: ~48 GB
 /// - HashMap approach: ~126 GB
@@ -40,12 +39,16 @@ pub struct CompactHibpData {
 impl CompactHibpData {
     /// Create empty compact data
     pub fn new() -> Self {
-        Self { entries: Vec::new() }
+        Self {
+            entries: Vec::new(),
+        }
     }
 
     /// Create with pre-allocated capacity
     pub fn with_capacity(capacity: usize) -> Self {
-        Self { entries: Vec::with_capacity(capacity) }
+        Self {
+            entries: Vec::with_capacity(capacity),
+        }
     }
 
     /// Create from a pre-sorted vector of entries
@@ -56,17 +59,17 @@ impl CompactHibpData {
 
     /// Build from an iterator of (hash_bytes, count) pairs
     /// The data will be sorted automatically
-    pub fn from_iter<I>(iter: I) -> Self 
-    where 
-        I: Iterator<Item = (HashBytes, u32)>
+    pub fn from_iter<I>(iter: I) -> Self
+    where
+        I: Iterator<Item = (HashBytes, u32)>,
     {
         let mut entries: Vec<HashEntry> = iter
             .map(|(hash, count)| HashEntry::new(hash, count))
             .collect();
-        
+
         // Sort by hash for binary search
         entries.sort_unstable_by(|a, b| a.hash.cmp(&b.hash));
-        
+
         Self { entries }
     }
 
@@ -119,7 +122,7 @@ impl CompactHibpData {
     pub fn iter(&self) -> impl Iterator<Item = &HashEntry> {
         self.entries.iter()
     }
-    
+
     /// Consume and return the entries vector
     /// Use this to transfer ownership for building PIR database
     pub fn into_entries(self) -> Vec<HashEntry> {
@@ -186,7 +189,7 @@ mod tests {
         let prefix = "5BAA6";
         let suffix = "1E4C9B93F3F0682250B6CF8331B7EE68FD8";
         let bytes = CompactHibpData::combine_and_decode(prefix, suffix).unwrap();
-        
+
         // Should equal decode of full hash
         let full = "5BAA61E4C9B93F3F0682250B6CF8331B7EE68FD8";
         let full_bytes = CompactHibpData::decode_hex(full).unwrap();
@@ -195,21 +198,23 @@ mod tests {
 
     #[test]
     fn test_lookup() {
-        let hash1 = CompactHibpData::decode_hex("0000000000000000000000000000000000000001").unwrap();
-        let hash2 = CompactHibpData::decode_hex("5BAA61E4C9B93F3F0682250B6CF8331B7EE68FD8").unwrap();
-        let hash3 = CompactHibpData::decode_hex("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF").unwrap();
+        let hash1 =
+            CompactHibpData::decode_hex("0000000000000000000000000000000000000001").unwrap();
+        let hash2 =
+            CompactHibpData::decode_hex("5BAA61E4C9B93F3F0682250B6CF8331B7EE68FD8").unwrap();
+        let hash3 =
+            CompactHibpData::decode_hex("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF").unwrap();
 
-        let data = CompactHibpData::from_iter(vec![
-            (hash2, 12345),
-            (hash1, 100),
-            (hash3, 999),
-        ].into_iter());
+        let data = CompactHibpData::from_iter(
+            vec![(hash2, 12345), (hash1, 100), (hash3, 999)].into_iter(),
+        );
 
         assert_eq!(data.lookup(&hash1), Some(100));
         assert_eq!(data.lookup(&hash2), Some(12345));
         assert_eq!(data.lookup(&hash3), Some(999));
-        
-        let missing = CompactHibpData::decode_hex("1111111111111111111111111111111111111111").unwrap();
+
+        let missing =
+            CompactHibpData::decode_hex("1111111111111111111111111111111111111111").unwrap();
         assert_eq!(data.lookup(&missing), None);
     }
 
@@ -219,4 +224,3 @@ mod tests {
         assert_eq!(std::mem::size_of::<HashEntry>(), 24);
     }
 }
-

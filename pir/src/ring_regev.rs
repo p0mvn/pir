@@ -39,7 +39,12 @@ pub fn keygen(params: &RlweParams, rng: &mut impl Rng) -> SecretKeyOwned {
 
 /// Encrypt a message polynomial using the secret key
 /// c = a·s + e + Δ·μ
-pub fn encrypt(params: &RlweParams, s: &SecretKey, m: &RingElement, rng: &mut impl Rng) -> RLWECiphertextOwned {
+pub fn encrypt(
+    params: &RlweParams,
+    s: &SecretKey,
+    m: &RingElement,
+    rng: &mut impl Rng,
+) -> RLWECiphertextOwned {
     let a = RingElement::random(params.d, rng);
     let e = RingElement::random_small(params.d, params.noise_stddev as i32, rng);
 
@@ -51,12 +56,8 @@ pub fn encrypt(params: &RlweParams, s: &SecretKey, m: &RingElement, rng: &mut im
     let delta_m = m.scalar_mul(params.delta());
 
     let c = a.mul(&s_ring).add(&e).add(&delta_m);
-    RLWECiphertextOwned {
-        a: a,
-        c: c,
-    }
+    RLWECiphertextOwned { a, c }
 }
-
 
 /// Decrypt: recover plaintext polynomial from ciphertext
 /// For each coefficient: μ_i = round_decode(c_i - (a·s)_i)
@@ -102,7 +103,9 @@ mod tests {
 
         // Random message polynomial with coefficients in [0, p)
         let msg = RingElement {
-            coeffs: (0..params.d).map(|_| rng.random_range(0..params.p)).collect(),
+            coeffs: (0..params.d)
+                .map(|_| rng.random_range(0..params.p))
+                .collect(),
         };
 
         let ct = encrypt(&params, &sk.as_ref(), &msg, &mut rng);
