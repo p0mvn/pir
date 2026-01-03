@@ -747,7 +747,7 @@ mod tests {
         let positions = kw_query.record_indices();
         println!("Keyword '{}' positions: {:?}", keyword, positions);
 
-        let expected_value = 43 * 100; // (42 + 1) * 100 = 4300
+        let expected_value: u32 = 43 * 100; // (42 + 1) * 100 = 4300
         println!(
             "Expected value: {} = {:?}",
             expected_value,
