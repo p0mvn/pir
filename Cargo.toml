@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "pir",
+    "ypir",
     "password-demo/hibp",
     "password-demo/server",
     "password-demo/pir-wasm",
