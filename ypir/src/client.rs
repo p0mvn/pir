@@ -41,6 +41,8 @@ pub struct YpirClient {
     params: YpirParams,
     /// Ring dimension for RLWE packing
     ring_dim: usize,
+    /// Number of rows in the database grid
+    num_rows: usize,
 }
 
 impl YpirClient {
@@ -54,6 +56,7 @@ impl YpirClient {
     ///
     /// Panics if setup data is inconsistent with parameters.
     pub fn new(setup: YpirSetup, params: YpirParams) -> Self {
+        let num_rows = setup.double_setup.num_rows;
         let inner = DoublePirClient::new(setup.double_setup, params.lwe);
         let ring_dim = setup.ring_dim;
 
@@ -61,6 +64,7 @@ impl YpirClient {
             inner,
             params,
             ring_dim,
+            num_rows,
         }
     }
 
@@ -120,15 +124,18 @@ impl YpirClient {
 
     /// Recover the requested record from a YPIR answer.
     ///
-    /// The answer contains packed RLWE ciphertexts. Each ciphertext encrypts
-    /// up to `d` plaintext coefficients (database bytes).
+    /// The answer contains packed RLWE ciphertexts encoding the first-pass
+    /// SimplePIR intermediate result (all rows × all bytes). The client:
+    /// 1. Decrypts all packed RLWE ciphertexts
+    /// 2. Decodes to get intermediate[row, byte] values
+    /// 3. Selects the target row to get the final record
     ///
     /// # Decryption Process
     ///
     /// For each RLWE ciphertext:
     /// 1. Compute raw decryption: `c - a·s` (noisy plaintext polynomial)
     /// 2. Decode each coefficient: `round(coeff/Δ) mod p`
-    /// 3. Concatenate to form the recovered record
+    /// 3. Extract target row's values to form the recovered record
     ///
     /// # Arguments
     /// * `state` - Secret state from query generation
@@ -140,10 +147,14 @@ impl YpirClient {
     pub fn recover(&self, state: &YpirQueryState, answer: &YpirAnswer) -> Vec<u8> {
         let p = self.params.packing.plaintext_modulus;
         let delta = self.params.packing.delta();
+        let record_size = self.inner.record_size();
+        let num_rows = self.num_rows;
+        let target_row = state.double_state.row_idx;
 
-        let mut result = Vec::new();
+        // Decrypt all packed RLWE ciphertexts to get intermediate values
+        // Layout: intermediate[row * record_size + byte] = value for (row, byte)
+        let mut all_intermediate: Vec<u8> = Vec::new();
 
-        // Decrypt each packed RLWE ciphertext
         for ct in &answer.packed_cts {
             // Raw decryption: c - a·s ≈ Δ·m + noise
             let noisy = decrypt_raw(&state.rlwe_secret, ct);
@@ -152,17 +163,30 @@ impl YpirClient {
             let decoded = decode_packed_result(&noisy, delta, p);
 
             // Each decoded value is a plaintext coefficient (0-255 for p=256)
-            // These are the database bytes
             for &coeff in &decoded {
-                result.push(coeff as u8);
+                all_intermediate.push(coeff as u8);
             }
         }
 
-        // Trim to actual record size (last ciphertext may have padding)
-        let record_size = self.inner.record_size();
-        result.truncate(record_size);
+        // The intermediate has layout: intermediate[row * record_size + byte]
+        // Total expected: num_rows * record_size values
+        let total_values = num_rows * record_size;
 
-        result
+        // Truncate to actual size (remove padding from last ciphertext)
+        if all_intermediate.len() > total_values {
+            all_intermediate.truncate(total_values);
+        }
+
+        // Extract the target row
+        let start = target_row * record_size;
+        let end = start + record_size;
+
+        if end <= all_intermediate.len() {
+            all_intermediate[start..end].to_vec()
+        } else {
+            // Shouldn't happen with correct protocol, but handle gracefully
+            vec![0u8; record_size]
+        }
     }
 
     /// Number of records in the database.

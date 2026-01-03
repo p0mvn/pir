@@ -18,28 +18,10 @@
 
 use rand::Rng;
 
+use crate::ntt::CrtParams;
 use crate::regev::Ciphertext;
 use crate::ring::RingElement;
-use crate::ring_regev::{RLWECiphertextOwned, RlweParams};
-
-/// Given a d×d matrix M (stored row-major as Vec<Vec<u32>>),
-/// extract the polynomial A such that rot(A) = M.
-///
-/// For this to be valid, M must actually BE a negacyclic matrix.
-/// In the general case (arbitrary LWE ciphertexts), M won't be negacyclic,
-/// so we need a different approach (key switching).
-fn matrix_to_ring_element(first_column: &[u32], d: usize) -> RingElement {
-    // First column of rot(A):
-    // [A₀, -A_(d-1), -A_(d-2), ..., -A₁]
-    let mut coeffs = vec![0u32; d];
-    coeffs[0] = first_column[0];
-    for i in 1..d {
-        // first_column[i] = -A_(d-i)
-        // So A_(d-i) = -first_column[i]
-        coeffs[d - i] = first_column[i].wrapping_neg();
-    }
-    RingElement { coeffs }
-}
+use crate::ring_regev::RLWECiphertextOwned;
 
 /// Pack d LWE ciphertexts into 1 RLWE ciphertext.
 ///
@@ -135,61 +117,6 @@ pub struct KeySwitchKey {
     pub target_position: usize,
 }
 
-/// Generate a key-switching key for position j.
-///
-/// This creates RLWE encryptions of `s_i · B^k · x^j` for all i, k,
-/// where B = GADGET_BASE = 2^LOG_BASE.
-///
-/// # Arguments
-/// * `lwe_secret` - The LWE secret key s (vector of d elements)
-/// * `rlwe_secret` - The RLWE secret key S (polynomial with d coefficients)
-/// * `j` - Target position: the result will encrypt μ · x^j
-/// * `params` - RLWE parameters
-/// * `rng` - Random number generator
-pub fn gen_key_switch_key(
-    lwe_secret: &[u32],
-    rlwe_secret: &RingElement,
-    j: usize,
-    params: &RlweParams,
-    rng: &mut impl Rng,
-) -> KeySwitchKey {
-    let d = params.d;
-    assert_eq!(lwe_secret.len(), d);
-    assert_eq!(rlwe_secret.coeffs.len(), d);
-    assert!(j < d);
-
-    let mut ks = Vec::with_capacity(d);
-
-    for i in 0..d {
-        let mut ks_i = Vec::with_capacity(NUM_DIGITS);
-        for k in 0..NUM_DIGITS {
-            // We want to encrypt: s_i · B^k · x^j
-            //
-            // Create the message polynomial: scalar · x^j
-            // where scalar = s_i · B^k = s_i · 2^(LOG_BASE * k)
-            let power = (LOG_BASE * k) as u32;
-            let scalar = lwe_secret[i].wrapping_mul(1u32 << power);
-
-            let mut msg_coeffs = vec![0u32; d];
-            msg_coeffs[j] = scalar;
-            let msg = RingElement { coeffs: msg_coeffs };
-
-            // Encrypt under RLWE secret
-            let rlwe_sk = crate::regev::SecretKey {
-                s: &rlwe_secret.coeffs,
-            };
-            let ct = crate::ring_regev::encrypt(params, &rlwe_sk, &msg, rng);
-            ks_i.push(ct);
-        }
-        ks.push(ks_i);
-    }
-
-    KeySwitchKey {
-        ks,
-        target_position: j,
-    }
-}
-
 /// Add two RLWE ciphertexts homomorphically.
 ///
 /// If ct1 encrypts m1 and ct2 encrypts m2, the result encrypts m1 + m2.
@@ -221,6 +148,7 @@ pub fn scalar_mul_rlwe_ciphertext(scalar: u32, ct: &RLWECiphertextOwned) -> RLWE
 ///
 /// More efficient than separate scalar_mul and add operations when
 /// accumulating many scaled ciphertexts.
+#[allow(dead_code)]
 pub fn add_scaled_rlwe_ciphertext(
     ct1: &RLWECiphertextOwned,
     scalar: u32,
@@ -229,6 +157,31 @@ pub fn add_scaled_rlwe_ciphertext(
     RLWECiphertextOwned {
         a: ct1.a.add(&ct2.a.scalar_mul(scalar)),
         c: ct1.c.add(&ct2.c.scalar_mul(scalar)),
+    }
+}
+
+/// Add scalar multiple of ct2 to ct1 in-place: ct1 += scalar * ct2
+///
+/// This avoids allocating new vectors on each accumulation, which is
+/// critical for performance in the key_switch inner loop.
+#[inline]
+fn add_scaled_rlwe_ciphertext_inplace(ct1: &mut RLWECiphertextOwned, scalar: u32, ct2: &RLWECiphertextOwned) {
+    for (a1, a2) in ct1.a.coeffs.iter_mut().zip(&ct2.a.coeffs) {
+        *a1 = a1.wrapping_add(a2.wrapping_mul(scalar));
+    }
+    for (c1, c2) in ct1.c.coeffs.iter_mut().zip(&ct2.c.coeffs) {
+        *c1 = c1.wrapping_add(c2.wrapping_mul(scalar));
+    }
+}
+
+/// Add ct2 to ct1 in-place: ct1 += ct2
+#[inline]
+fn add_rlwe_ciphertext_inplace(ct1: &mut RLWECiphertextOwned, ct2: &RLWECiphertextOwned) {
+    for (a1, a2) in ct1.a.coeffs.iter_mut().zip(&ct2.a.coeffs) {
+        *a1 = a1.wrapping_add(*a2);
+    }
+    for (c1, c2) in ct1.c.coeffs.iter_mut().zip(&ct2.c.coeffs) {
+        *c1 = c1.wrapping_add(*c2);
     }
 }
 
@@ -305,6 +258,7 @@ pub fn key_switch(lwe_ct: &Ciphertext, ks_key: &KeySwitchKey) -> RLWECiphertextO
     };
 
     // Accumulate: Σ_i Σ_k d_k · KS[i][k]
+    // Use in-place accumulation to avoid repeated allocations
     let mut accumulated = zero_rlwe_ciphertext(ring_dim);
     let digit_mask = GADGET_BASE - 1;
 
@@ -318,8 +272,8 @@ pub fn key_switch(lwe_ct: &Ciphertext, ks_key: &KeySwitchKey) -> RLWECiphertextO
             let digit = a_i & digit_mask;
 
             if digit != 0 {
-                // Add digit · KS[i][k] to the accumulator
-                accumulated = add_scaled_rlwe_ciphertext(&accumulated, digit, &ks_key.ks[i][k]);
+                // Add digit · KS[i][k] to the accumulator (in-place)
+                add_scaled_rlwe_ciphertext_inplace(&mut accumulated, digit, &ks_key.ks[i][k]);
             }
 
             // Shift right by LOG_BASE bits to get next digit
@@ -365,6 +319,11 @@ pub fn key_switch(lwe_ct: &Ciphertext, ks_key: &KeySwitchKey) -> RLWECiphertextO
 ///
 /// Note: This bypasses the plaintext modulus p entirely.
 ///
+/// # Performance
+///
+/// Uses CRT-based NTT for O(n log n) polynomial multiplication.
+/// The CRT parameters are precomputed once and reused for all encryptions.
+///
 /// # Dimensions
 ///
 /// - LWE dimension n is inferred from `lwe_secret.len()`
@@ -386,6 +345,9 @@ pub fn gen_key_switch_key_raw(
         ring_dim
     );
 
+    // Precompute CRT parameters for O(n log n) multiplication
+    let crt = CrtParams::new(ring_dim);
+
     let mut ks = Vec::with_capacity(lwe_dim);
 
     for i in 0..lwe_dim {
@@ -406,7 +368,8 @@ pub fn gen_key_switch_key_raw(
             let msg = RingElement { coeffs: msg_coeffs };
 
             // c = a · S + e + msg (raw, no Δ)
-            let c = a.mul(rlwe_secret).add(&e).add(&msg);
+            // Use CRT-based NTT for O(n log n) polynomial multiplication
+            let c = a.mul_crt(rlwe_secret, &crt).add(&e).add(&msg);
 
             ks_i.push(RLWECiphertextOwned { a, c });
         }
@@ -423,8 +386,28 @@ pub fn gen_key_switch_key_raw(
 ///
 /// Returns the noisy plaintext: c - a·s ≈ msg + e
 /// The caller must handle rounding/decoding.
+///
+/// # Performance
+///
+/// Uses CRT-based NTT for O(n log n) polynomial multiplication.
+/// For multiple decryptions, consider using `decrypt_raw_with_crt` with
+/// precomputed CRT parameters.
 pub fn decrypt_raw(rlwe_secret: &RingElement, ct: &RLWECiphertextOwned) -> RingElement {
-    ct.c.sub(&ct.a.mul(rlwe_secret))
+    let ring_dim = rlwe_secret.coeffs.len();
+    let crt = CrtParams::new(ring_dim);
+    ct.c.sub(&ct.a.mul_crt(rlwe_secret, &crt))
+}
+
+/// Decrypt a "raw" RLWE ciphertext with precomputed CRT parameters.
+///
+/// This is more efficient when decrypting multiple ciphertexts as the
+/// CRT parameters are computed once and reused.
+pub fn decrypt_raw_with_crt(
+    rlwe_secret: &RingElement,
+    ct: &RLWECiphertextOwned,
+    crt: &CrtParams,
+) -> RingElement {
+    ct.c.sub(&ct.a.mul_crt(rlwe_secret, crt))
 }
 
 // ============================================================================
@@ -542,7 +525,7 @@ pub fn pack_with_key_switching(
     // Start with zero RLWE ciphertext
     let mut result = zero_rlwe_ciphertext(d);
 
-    // Key-switch each LWE ciphertext to its position and accumulate
+    // Key-switch each LWE ciphertext to its position and accumulate (in-place)
     for (j, lwe_ct) in lwe_cts.iter().enumerate() {
         assert_eq!(
             lwe_ct.a.len(),
@@ -556,8 +539,8 @@ pub fn pack_with_key_switching(
         // Key-switch ct_j to position j: produces RLWE encrypting μ_j · x^j
         let rlwe_j = key_switch(lwe_ct, &packing_key.keys[j]);
 
-        // Add to accumulator
-        result = add_rlwe_ciphertexts(&result, &rlwe_j);
+        // Add to accumulator (in-place to avoid allocation)
+        add_rlwe_ciphertext_inplace(&mut result, &rlwe_j);
     }
 
     // Result encrypts: Σ_j μ_j · x^j = μ₀ + μ₁x + μ₂x² + ... + μ_{d-1}x^{d-1}
@@ -584,6 +567,7 @@ mod tests {
     use crate::{
         params::LweParams,
         regev::{self, CiphertextOwned},
+        ring_regev::RlweParams,
     };
 
     use super::*;
@@ -638,30 +622,6 @@ mod tests {
             }
         }
         result
-    }
-
-    #[test]
-    fn test_matrix_to_ring_element_happy_path() {
-        // Given polynomial A = [1, 2, 3, 4] (coefficients A₀=1, A₁=2, A₂=3, A₃=4)
-        // The first column of its negacyclic rotation matrix rot(A) is:
-        //   [A₀, -A₃, -A₂, -A₁] = [1, -4, -3, -2]
-        //
-        // In u32 wrapping arithmetic:
-        //   -4 = 0xFFFF_FFFC
-        //   -3 = 0xFFFF_FFFD
-        //   -2 = 0xFFFF_FFFE
-        let d = 4;
-        let first_column: Vec<u32> = vec![
-            1,                    // A₀
-            0u32.wrapping_sub(4), // -A₃ = -4
-            0u32.wrapping_sub(3), // -A₂ = -3
-            0u32.wrapping_sub(2), // -A₁ = -2
-        ];
-
-        // The function should recover the original polynomial A = [1, 2, 3, 4]
-        let result = matrix_to_ring_element(&first_column, d);
-
-        assert_eq!(result.coeffs, vec![1, 2, 3, 4]);
     }
 
     #[test]

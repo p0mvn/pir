@@ -393,6 +393,8 @@ impl RingElement {
     /// this gives identical results. For very large coefficients that wrap
     /// around 2^32, results may differ.
     ///
+    /// For exact q = 2^32 arithmetic, use `mul_crt` instead.
+    ///
     /// # Arguments
     /// * `other` - The polynomial to multiply with
     /// * `params` - Precomputed NTT parameters (reuse for efficiency)
@@ -418,6 +420,27 @@ impl RingElement {
         // Convert back to u32
         Self {
             coeffs: ntt::ntt_coeffs_to_u32(&c_ntt),
+        }
+    }
+
+    /// Multiply using CRT-based NTT (O(n log n) instead of O(n²)).
+    ///
+    /// This uses Chinese Remainder Theorem with three NTT-friendly primes to
+    /// compute the exact polynomial product, then reduces mod 2^32. This gives
+    /// results identical to schoolbook multiplication with wrapping u32 arithmetic.
+    ///
+    /// Use this for cryptographic operations that require exact q = 2^32 modulus.
+    ///
+    /// # Arguments
+    /// * `other` - The polynomial to multiply with
+    /// * `crt` - Precomputed CRT parameters (reuse for efficiency)
+    pub fn mul_crt(&self, other: &Self, crt: &ntt::CrtParams) -> Self {
+        let d = self.coeffs.len();
+        assert_eq!(d, other.coeffs.len());
+        assert_eq!(d, crt.ntt1.d);
+
+        Self {
+            coeffs: ntt::poly_mul_u32_crt(&self.coeffs, &other.coeffs, crt),
         }
     }
 

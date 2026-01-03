@@ -28,9 +28,11 @@
 
 pub mod client;
 pub mod params;
+pub mod server;
 
 pub use client::YpirClient;
 pub use params::{LweParams, PackingParams, YpirParams};
+pub use server::YpirServer;
 
 use pir::double::{DoublePirQuery, DoublePirQueryState, DoublePirSetup};
 use pir::lwe_to_rlwe::PackingKey;
