@@ -83,23 +83,51 @@ pub fn pack_naive(
 // Key Switching Implementation
 // ============================================================================
 
-/// Number of bits to decompose each coefficient into.
-/// Using base-2 decomposition (each bit separately).
-/// For q = 2^32, we have 32 bits per coefficient.
-const LOG_Q: usize = 32;
+/// Gadget decomposition parameters.
+///
+/// Instead of base-2 decomposition (32 bits → 32 RLWE ciphertexts per position),
+/// we use a larger base to reduce the number of ciphertexts.
+///
+/// With base B = 2^LOG_BASE:
+/// - Each coefficient is decomposed into NUM_DIGITS digits in base B
+/// - KS[i][k] encrypts s_i · B^k · x^j
+/// - During key switching, we multiply by the digit value (not just 0/1)
+///
+/// Example with base 256 (LOG_BASE = 8):
+/// - NUM_DIGITS = 32/8 = 4 (instead of 32)
+/// - Each digit is in range [0, 255]
+/// - 8x reduction in packing key size
+
+/// Number of bits per digit in gadget decomposition.
+/// LOG_BASE = 8 means base 256.
+pub const LOG_BASE: usize = 8;
+
+/// The decomposition base: B = 2^LOG_BASE = 256
+pub const GADGET_BASE: u32 = 1 << LOG_BASE;
+
+/// Number of digits needed to represent a 32-bit coefficient in base B.
+/// NUM_DIGITS = 32 / LOG_BASE = 4 for base 256
+pub const NUM_DIGITS: usize = 32 / LOG_BASE;
 
 /// A key-switching key for a single position j.
 ///
 /// This allows converting an LWE ciphertext (under secret s) to an RLWE
 /// ciphertext (under secret S) that encrypts `μ · x^j`.
 ///
-/// Structure: `ks[i][k]` is an RLWE encryption of `s_i · 2^k · x^j`
+/// Structure: `ks[i][k]` is an RLWE encryption of `s_i · B^k · x^j`
 /// where:
 /// - i ∈ {0, ..., d-1} indexes the LWE secret component
-/// - k ∈ {0, ..., 31} indexes the bit position
+/// - k ∈ {0, ..., NUM_DIGITS-1} indexes the digit position
+/// - B = GADGET_BASE = 2^LOG_BASE (e.g., 256 for LOG_BASE=8)
+///
+/// With base 256, we have 4 ciphertexts per position instead of 32:
+///   KS[i][0] = RLWE.Enc(s_i · 1 · x^j)
+///   KS[i][1] = RLWE.Enc(s_i · 256 · x^j)
+///   KS[i][2] = RLWE.Enc(s_i · 256² · x^j)
+///   KS[i][3] = RLWE.Enc(s_i · 256³ · x^j)
 pub struct KeySwitchKey {
-    /// ks[i][k] encrypts s_i · 2^k · x^j under the RLWE secret
-    /// Dimensions: [d][LOG_Q]
+    /// ks[i][k] encrypts s_i · B^k · x^j under the RLWE secret
+    /// Dimensions: [d][NUM_DIGITS]
     pub ks: Vec<Vec<RLWECiphertextOwned>>,
     /// The target position j (encrypts μ · x^j)
     pub target_position: usize,
@@ -107,7 +135,8 @@ pub struct KeySwitchKey {
 
 /// Generate a key-switching key for position j.
 ///
-/// This creates RLWE encryptions of `s_i · 2^k · x^j` for all i, k.
+/// This creates RLWE encryptions of `s_i · B^k · x^j` for all i, k,
+/// where B = GADGET_BASE = 2^LOG_BASE.
 ///
 /// # Arguments
 /// * `lwe_secret` - The LWE secret key s (vector of d elements)
@@ -130,13 +159,14 @@ pub fn gen_key_switch_key(
     let mut ks = Vec::with_capacity(d);
 
     for i in 0..d {
-        let mut ks_i = Vec::with_capacity(LOG_Q);
-        for k in 0..LOG_Q {
-            // We want to encrypt: s_i · 2^k · x^j
+        let mut ks_i = Vec::with_capacity(NUM_DIGITS);
+        for k in 0..NUM_DIGITS {
+            // We want to encrypt: s_i · B^k · x^j
             //
             // Create the message polynomial: scalar · x^j
-            // where scalar = s_i · 2^k
-            let scalar = lwe_secret[i].wrapping_mul(1u32 << k);
+            // where scalar = s_i · B^k = s_i · 2^(LOG_BASE * k)
+            let power = (LOG_BASE * k) as u32;
+            let scalar = lwe_secret[i].wrapping_mul(1u32 << power);
 
             let mut msg_coeffs = vec![0u32; d];
             msg_coeffs[j] = scalar;
@@ -171,6 +201,35 @@ pub fn add_rlwe_ciphertexts(
     }
 }
 
+/// Multiply an RLWE ciphertext by a scalar homomorphically.
+///
+/// If ct encrypts m, the result encrypts scalar · m.
+///
+/// This is used in gadget decomposition with larger bases (e.g., base 256).
+/// Instead of just adding ciphertexts when a bit is 1, we multiply by the
+/// digit value (0-255) and add.
+pub fn scalar_mul_rlwe_ciphertext(scalar: u32, ct: &RLWECiphertextOwned) -> RLWECiphertextOwned {
+    RLWECiphertextOwned {
+        a: ct.a.scalar_mul(scalar),
+        c: ct.c.scalar_mul(scalar),
+    }
+}
+
+/// Add scalar multiple of ct2 to ct1: ct1 + scalar * ct2
+///
+/// More efficient than separate scalar_mul and add operations when
+/// accumulating many scaled ciphertexts.
+pub fn add_scaled_rlwe_ciphertext(
+    ct1: &RLWECiphertextOwned,
+    scalar: u32,
+    ct2: &RLWECiphertextOwned,
+) -> RLWECiphertextOwned {
+    RLWECiphertextOwned {
+        a: ct1.a.add(&ct2.a.scalar_mul(scalar)),
+        c: ct1.c.add(&ct2.c.scalar_mul(scalar)),
+    }
+}
+
 /// Create a "zero" RLWE ciphertext (encrypts zero with no noise).
 ///
 /// This is used as the starting point for accumulating key-switch results.
@@ -195,16 +254,17 @@ fn zero_rlwe_ciphertext(d: usize) -> RLWECiphertextOwned {
 ///
 /// The key insight: we can "absorb" the ⟨a, s⟩ term using the key-switch key.
 ///
-/// For each a_i, decompose it into bits: a_i = Σ_k a_i,k · 2^k
+/// For each a_i, decompose it into base-B digits: a_i = Σ_k d_k · B^k
+/// where B = GADGET_BASE and d_k ∈ [0, B-1].
 ///
-/// Then: ⟨a, s⟩ = Σ_i a_i · s_i = Σ_i Σ_k a_i,k · 2^k · s_i
+/// Then: ⟨a, s⟩ = Σ_i a_i · s_i = Σ_i Σ_k d_k · B^k · s_i
 ///
-/// The key-switch key contains RLWE encryptions of s_i · 2^k · x^j.
-/// By summing the appropriate ciphertexts (weighted by the bits a_i,k),
+/// The key-switch key contains RLWE encryptions of s_i · B^k · x^j.
+/// By summing the appropriate ciphertexts (weighted by digits d_k),
 /// we get an RLWE encryption of ⟨a, s⟩ · x^j.
 ///
 /// Final result:
-///   C' = c · x^j - Σ_i Σ_k a_i,k · KS[i][k]
+///   C' = c · x^j - Σ_i Σ_k d_k · KS[i][k]
 ///
 /// which decrypts to: c · x^j - ⟨a, s⟩ · x^j = (e + Δμ) · x^j ≈ Δμ · x^j
 pub fn key_switch(
@@ -224,21 +284,28 @@ pub fn key_switch(
     };
 
     // Now we need to subtract the key-switched ⟨a, s⟩ term
-    // Accumulate: Σ_i Σ_k a_i,k · KS[i][k]
+    // Accumulate: Σ_i Σ_k d_k · KS[i][k]
     let mut accumulated = zero_rlwe_ciphertext(d);
 
+    // Mask to extract a single digit (B-1 = 2^LOG_BASE - 1)
+    let digit_mask = GADGET_BASE - 1;
+
     for i in 0..d {
-        let a_i = lwe_ct.a[i];
+        let mut a_i = lwe_ct.a[i];
 
-        // Decompose a_i into bits and accumulate
-        for k in 0..LOG_Q {
-            // Extract bit k of a_i
-            let bit = (a_i >> k) & 1;
+        // Decompose a_i into base-B digits and accumulate
+        for k in 0..NUM_DIGITS {
+            // Extract digit k (lowest LOG_BASE bits of current a_i)
+            let digit = a_i & digit_mask;
 
-            if bit == 1 {
-                // Add KS[i][k] to the accumulator
-                accumulated = add_rlwe_ciphertexts(&accumulated, &ks_key.ks[i][k]);
+            if digit != 0 {
+                // Add digit · KS[i][k] to the accumulator
+                // This is the key difference from base-2: scalar multiplication
+                accumulated = add_scaled_rlwe_ciphertext(&accumulated, digit, &ks_key.ks[i][k]);
             }
+
+            // Shift right by LOG_BASE bits to get next digit
+            a_i >>= LOG_BASE;
         }
     }
 
@@ -266,11 +333,17 @@ pub fn key_switch(
 
 /// Generate a key-switching key for position j (RAW version).
 ///
-/// This creates RLWE encryptions of `s_i · 2^k · x^j` WITHOUT the Δ scaling.
-/// This is necessary because the ⟨a, s⟩ term in LWE is not Δ-scaled.
+/// This creates RLWE encryptions of `s_i · B^k · x^j` WITHOUT the Δ scaling,
+/// where B = GADGET_BASE = 2^LOG_BASE (e.g., 256).
 ///
 /// The ciphertext structure is:
-///   KS[i][k].c = KS[i][k].a · S + e + s_i · 2^k · x^j
+///   KS[i][k].c = KS[i][k].a · S + e + s_i · B^k · x^j
+///
+/// With base 256:
+///   KS[i][0] = RLWE.Enc(s_i · 1 · x^j)
+///   KS[i][1] = RLWE.Enc(s_i · 256 · x^j)
+///   KS[i][2] = RLWE.Enc(s_i · 256² · x^j)
+///   KS[i][3] = RLWE.Enc(s_i · 256³ · x^j)
 ///
 /// Note: This bypasses the plaintext modulus p entirely.
 pub fn gen_key_switch_key_raw(
@@ -288,16 +361,18 @@ pub fn gen_key_switch_key_raw(
     let mut ks = Vec::with_capacity(d);
 
     for i in 0..d {
-        let mut ks_i = Vec::with_capacity(LOG_Q);
-        for k in 0..LOG_Q {
-            // Create raw RLWE encryption of s_i · 2^k · x^j
-            // c = a · S + e + s_i · 2^k · x^j (NO Δ scaling!)
+        let mut ks_i = Vec::with_capacity(NUM_DIGITS);
+        for k in 0..NUM_DIGITS {
+            // Create raw RLWE encryption of s_i · B^k · x^j
+            // c = a · S + e + s_i · B^k · x^j (NO Δ scaling!)
 
             let a = RingElement::random(d, rng);
             let e = RingElement::random_small(d, noise_stddev as i32, rng);
 
-            // Message: s_i · 2^k · x^j
-            let scalar = lwe_secret[i].wrapping_mul(1u32 << k);
+            // Message: s_i · B^k · x^j
+            // B^k = (2^LOG_BASE)^k = 2^(LOG_BASE * k)
+            let power = (LOG_BASE * k) as u32;
+            let scalar = lwe_secret[i].wrapping_mul(1u32 << power);
             let mut msg_coeffs = vec![0u32; d];
             msg_coeffs[j] = scalar;
             let msg = RingElement { coeffs: msg_coeffs };
@@ -339,8 +414,11 @@ pub fn decrypt_raw(rlwe_secret: &RingElement, ct: &RLWECiphertextOwned) -> RingE
 /// LWE(μ₃) --[KS to pos 3]--> RLWE(μ₃·x³)    /
 /// ```
 ///
-/// Size: d × d × LOG_Q × 2d coefficients = O(d³ log q) storage
-/// For d=4, LOG_Q=32: 4 × 4 × 32 × 2 × 4 = 4096 u32 values
+/// Size: d × d × NUM_DIGITS × 2d coefficients = O(d³ · log_B(q)) storage
+/// where B = GADGET_BASE = 256 and NUM_DIGITS = 32/LOG_BASE = 4.
+///
+/// For d=4, NUM_DIGITS=4: 4 × 4 × 4 × 2 × 4 = 512 u32 values
+/// (8x smaller than base-2 decomposition with LOG_Q=32)
 pub struct PackingKey {
     /// keys[j] is the key-switching key for position j
     pub keys: Vec<KeySwitchKey>,
@@ -554,10 +632,10 @@ mod tests {
         let j = 2; // Target position
         let ks_key = gen_key_switch_key_raw(&lwe_secret, &rlwe_secret, j, d, noise_stddev, &mut rng);
 
-        // Check dimensions
+        // Check dimensions - now using NUM_DIGITS instead of LOG_Q (32)
         assert_eq!(ks_key.ks.len(), d);
         for i in 0..d {
-            assert_eq!(ks_key.ks[i].len(), LOG_Q);
+            assert_eq!(ks_key.ks[i].len(), NUM_DIGITS); // 4 instead of 32
         }
         assert_eq!(ks_key.target_position, j);
     }
@@ -578,8 +656,10 @@ mod tests {
         let j = 1; // Target position x^1
         let ks_key = gen_key_switch_key_raw(&lwe_secret, &rlwe_secret, j, d, noise_stddev, &mut rng);
 
-        // Check a few entries: KS[i][k] should decrypt to s_i · 2^k · x^j
-        // Let's check KS[0][0]: should be s_0 · 2^0 · x^1 = 5 · 1 · x = 5x
+        // Check a few entries: KS[i][k] should decrypt to s_i · B^k · x^j
+        // where B = GADGET_BASE = 256
+        
+        // KS[0][0]: should be s_0 · B^0 · x^1 = 5 · 1 · x = 5x
         let decrypted_00 = decrypt_raw(&rlwe_secret, &ks_key.ks[0][0]);
 
         // The decrypted polynomial should have coefficient 5 at position j=1
@@ -608,16 +688,28 @@ mod tests {
             }
         }
 
-        // Check KS[2][3]: should be s_2 · 2^3 · x^1 = 7 · 8 · x = 56x
-        let decrypted_23 = decrypt_raw(&rlwe_secret, &ks_key.ks[2][3]);
-        let coeff_at_j_23 = decrypted_23.coeffs[j] as i64;
-        let expected_23 = 7i64 * 8; // 56
-        let diff_23 = (coeff_at_j_23 - expected_23).abs();
+        // KS[2][1]: should be s_2 · B^1 · x^1 = 7 · 256 · x = 1792x
+        let decrypted_21 = decrypt_raw(&rlwe_secret, &ks_key.ks[2][1]);
+        let coeff_at_j_21 = decrypted_21.coeffs[j] as i64;
+        let expected_21 = 7i64 * GADGET_BASE as i64; // 7 * 256 = 1792
+        let diff_21 = (coeff_at_j_21 - expected_21).abs();
         assert!(
-            diff_23 < 100,
-            "KS[2][3] decryption error too large: got {}, expected ~{}",
-            coeff_at_j_23,
-            expected_23
+            diff_21 < 100,
+            "KS[2][1] decryption error too large: got {}, expected ~{}",
+            coeff_at_j_21,
+            expected_21
+        );
+
+        // KS[1][2]: should be s_1 · B^2 · x^1 = 3 · 65536 · x = 196608x
+        let decrypted_12 = decrypt_raw(&rlwe_secret, &ks_key.ks[1][2]);
+        let coeff_at_j_12 = decrypted_12.coeffs[j] as i64;
+        let expected_12 = 3i64 * (GADGET_BASE as i64 * GADGET_BASE as i64); // 3 * 256^2 = 196608
+        let diff_12 = (coeff_at_j_12 - expected_12).abs();
+        assert!(
+            diff_12 < 100,
+            "KS[1][2] decryption error too large: got {}, expected ~{}",
+            coeff_at_j_12,
+            expected_12
         );
     }
 
@@ -991,10 +1083,15 @@ mod tests {
         let packing_key = gen_packing_key(&secret, &rlwe_secret, d, noise_stddev, &mut rng);
 
         // Count total RLWE ciphertexts in packing key
-        let total_rlwe_cts: usize = packing_key.keys.iter().map(|k| k.ks.len() * LOG_Q).sum();
+        let total_rlwe_cts: usize = packing_key
+            .keys
+            .iter()
+            .map(|k| k.ks.len() * NUM_DIGITS)
+            .sum();
 
-        // Expected: d positions × d secret components × LOG_Q bits = d² × LOG_Q
-        let expected = d * d * LOG_Q;
+        // Expected: d positions × d secret components × NUM_DIGITS = d² × NUM_DIGITS
+        // With base 256 (NUM_DIGITS=4), this is 8x smaller than base-2 (LOG_Q=32)
+        let expected = d * d * NUM_DIGITS;
         assert_eq!(total_rlwe_cts, expected);
 
         // Each RLWE ciphertext has 2d coefficients
@@ -1006,5 +1103,110 @@ mod tests {
             total_coefficients,
             total_coefficients * 4 / 1024
         );
+        println!(
+            "  Using base {} (LOG_BASE={}), NUM_DIGITS={}",
+            GADGET_BASE, LOG_BASE, NUM_DIGITS
+        );
+        println!(
+            "  Reduction from base-2: {}x fewer ciphertexts",
+            32 / NUM_DIGITS
+        );
+    }
+
+    /// Test that the optimized gadget decomposition produces correct results
+    #[test]
+    fn test_gadget_decomposition_correctness() {
+        // Verify that base-B decomposition correctly reconstructs values
+        let test_values: Vec<u32> = vec![
+            0,
+            1,
+            255,
+            256,
+            257,
+            65535,
+            65536,
+            0x12345678,
+            0xDEADBEEF,
+            u32::MAX,
+        ];
+
+        for &val in &test_values {
+            // Decompose into base-B digits
+            let mut digits = [0u32; NUM_DIGITS];
+            let mut v = val;
+            for k in 0..NUM_DIGITS {
+                digits[k] = v & (GADGET_BASE - 1);
+                v >>= LOG_BASE;
+            }
+
+            // Reconstruct: sum of digit[k] * B^k
+            let mut reconstructed = 0u32;
+            for k in 0..NUM_DIGITS {
+                let power = (LOG_BASE * k) as u32;
+                reconstructed = reconstructed.wrapping_add(digits[k].wrapping_mul(1u32 << power));
+            }
+
+            assert_eq!(
+                reconstructed, val,
+                "Failed to reconstruct {}: got {}",
+                val, reconstructed
+            );
+        }
+    }
+
+    /// Verify the noise growth with base-256 is acceptable
+    #[test]
+    fn test_base256_noise_growth() {
+        // With base-256, each digit can be up to 255, so we multiply ciphertexts
+        // by larger values. This increases noise by factor of ~B/2 = 128 per digit.
+        // 
+        // Total noise growth compared to base-2:
+        // - Base-2: 32 additions (each adds ~e noise) → ~32e total
+        // - Base-256: 4 additions with scalar ~128 each → ~4*128e = 512e total
+        //
+        // However, we have 8x fewer ciphertexts and operations, which can be
+        // worth the noise tradeoff for many applications.
+        
+        let d = 4;
+        let p = 256u32;
+        let noise_stddev = 2.0;
+        let params = LweParams {
+            n: d,
+            p,
+            noise_stddev,
+        };
+        let mut rng = rand::rng();
+
+        let secret: Vec<u32> = (0..d).map(|_| rng.random()).collect();
+        let rlwe_secret = RingElement {
+            coeffs: secret.clone(),
+        };
+
+        // Test with multiple random messages to ensure decryption works
+        for _ in 0..10 {
+            let messages: Vec<u32> = (0..d).map(|_| rng.random_range(0..p)).collect();
+
+            let lwe_cts: Vec<CiphertextOwned> = messages
+                .iter()
+                .map(|&msg| {
+                    let a: Vec<u32> = (0..d).map(|_| rng.random()).collect();
+                    let c =
+                        regev::encrypt(&params, &a, &regev::SecretKey { s: &secret }, msg, &mut rng);
+                    CiphertextOwned { a, c }
+                })
+                .collect();
+
+            let packing_key = gen_packing_key(&secret, &rlwe_secret, d, noise_stddev, &mut rng);
+            let lwe_refs: Vec<_> = lwe_cts.iter().map(|ct| ct.as_ref()).collect();
+            let rlwe_ct = pack_with_key_switching(&lwe_refs, &packing_key);
+            let decrypted_poly = decrypt_raw(&rlwe_secret, &rlwe_ct);
+            let decoded = decode_packed_result(&decrypted_poly, params.delta(), p);
+
+            assert_eq!(
+                decoded, messages,
+                "Base-256 packing failed: got {:?}, expected {:?}",
+                decoded, messages
+            );
+        }
     }
 }
