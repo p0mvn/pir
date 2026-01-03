@@ -26,8 +26,10 @@
 //! - **SimplePIR pass**: d₁ = 2^10, q₁ = 2^32 (high-throughput database scan)
 //! - **Packing pass**: d₂ = 2^11, q₂ ≈ 2^32 (response compression via RLWE)
 
+pub mod client;
 pub mod params;
 
+pub use client::YpirClient;
 pub use params::{LweParams, PackingParams, YpirParams};
 
 use pir::double::{DoublePirQuery, DoublePirQueryState, DoublePirSetup};
