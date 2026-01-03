@@ -3,6 +3,7 @@ pub mod double;
 pub mod lwe_to_rlwe;
 pub mod matrix_database;
 pub mod mode_selector;
+pub mod ntt;
 pub mod params;
 pub mod pir;
 pub mod pir_trait;

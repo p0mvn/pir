@@ -165,6 +165,6 @@ criterion_group!(
     bench_simple_server_preprocessing,
     bench_simple_end_to_end,
     bench_double_server_preprocessing,
-    bench_double_end_to_end
+    bench_double_end_to_end,
 );
 criterion_main!(benches);
