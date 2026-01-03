@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// LWE cryptographic parameters
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct LweParams {
     pub n: usize,          // LWE dimension (e.g., 1024)
     pub p: u32,            // Plaintext modulus (e.g., 256 for bytes)
