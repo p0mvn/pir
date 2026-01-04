@@ -5,14 +5,14 @@
 
 use rand::Rng;
 
-use pir::double::DoublePirClient;
-use pir::lwe_to_rlwe::{decode_packed_result, decrypt_raw_with_crt, gen_packing_key};
-use pir::ntt::CrtParams;
-use pir::params::LweParams;
-use pir::pir_trait::PirClient as PirClientTrait;
-use pir::ring::RingElement;
+use crate::double::DoublePirClient;
+use crate::lwe_to_rlwe::{decode_packed_result, decrypt_raw_with_crt, gen_packing_key};
+use crate::ntt::CrtParams;
+use crate::params::LweParams;
+use crate::pir_trait::PirClient as PirClientTrait;
+use crate::ring::RingElement;
 
-use crate::{Ypir, YpirAnswer, YpirParams, YpirQuery, YpirQueryState, YpirSetup};
+use super::{Ypir, YpirAnswer, YpirParams, YpirQuery, YpirQueryState, YpirSetup};
 
 /// YPIR client: DoublePIR client with LWE-to-RLWE packing support.
 ///
@@ -254,8 +254,8 @@ impl PirClientTrait for YpirClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pir::lwe_to_rlwe::{decrypt_raw, pack_with_key_switching};
-    use pir::regev::{self, CiphertextOwned, SecretKey};
+    use crate::lwe_to_rlwe::{decode_packed_result, decrypt_raw, pack_with_key_switching};
+    use crate::regev::{self, CiphertextOwned, SecretKey};
 
     /// Test that packing key generation works correctly
     #[test]

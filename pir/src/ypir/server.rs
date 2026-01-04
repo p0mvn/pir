@@ -15,14 +15,14 @@
 
 use rand::Rng;
 
-use pir::double::DoublePirServer;
-use pir::lwe_to_rlwe::pack_with_key_switching;
-use pir::matrix_database::DoublePirDatabase;
-use pir::pir::{LweMatrix, MatrixSeed};
-use pir::pir_trait::PirServer as PirServerTrait;
-use pir::regev::Ciphertext;
+use crate::double::DoublePirServer;
+use crate::lwe_to_rlwe::pack_with_key_switching;
+use crate::matrix_database::DoublePirDatabase;
+use crate::pir::{LweMatrix, MatrixSeed};
+use crate::pir_trait::PirServer as PirServerTrait;
+use crate::regev::Ciphertext;
 
-use crate::{Ypir, YpirAnswer, YpirParams, YpirQuery, YpirSetup};
+use super::{Ypir, YpirAnswer, YpirParams, YpirQuery, YpirSetup};
 
 /// YPIR server: DoublePIR server with LWE-to-RLWE response packing.
 ///
@@ -243,9 +243,9 @@ impl PirServerTrait for YpirServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{LweParams, PackingParams, YpirClient, YpirParams};
-    use pir::matrix_database::DoublePirDatabase;
-    use pir::pir_trait::CommunicationCost;
+    use super::super::{LweParams, PackingParams, YpirClient, YpirParams};
+    use crate::matrix_database::DoublePirDatabase;
+    use crate::pir_trait::CommunicationCost;
 
     fn create_test_records(n: usize, record_size: usize) -> Vec<Vec<u8>> {
         (0..n)
@@ -391,7 +391,7 @@ mod tests {
     /// Test YPIR via trait interface
     #[test]
     fn test_ypir_via_trait() {
-        use pir::pir_trait::{PirClient, PirServer};
+        use crate::pir_trait::{PirClient, PirServer};
 
         let records = create_test_records(9, 4);
         let record_refs: Vec<&[u8]> = records.iter().map(|r| r.as_slice()).collect();

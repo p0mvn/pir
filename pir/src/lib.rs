@@ -11,6 +11,7 @@ pub mod regev;
 pub mod ring;
 pub mod ring_regev;
 pub mod simple;
+pub mod ypir;
 
 // Re-export commonly used types for convenience
 pub use binary_fuse::{
@@ -19,3 +20,4 @@ pub use binary_fuse::{
 };
 pub use double::{DoublePir, DoublePirClient, DoublePirServer};
 pub use simple::{PirClient, PirServer, SimplePir};
+pub use ypir::{Ypir, YpirClient, YpirServer};

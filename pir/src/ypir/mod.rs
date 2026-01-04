@@ -34,11 +34,11 @@ pub use client::YpirClient;
 pub use params::{LweParams, PackingParams, YpirParams};
 pub use server::YpirServer;
 
-use pir::double::{DoublePirQuery, DoublePirQueryState, DoublePirSetup};
-use pir::lwe_to_rlwe::PackingKey;
-use pir::pir_trait::{CommunicationCost, PirProtocol};
-use pir::ring::RingElement;
-use pir::ring_regev::RLWECiphertextOwned;
+use crate::double::{DoublePirQuery, DoublePirQueryState, DoublePirSetup};
+use crate::lwe_to_rlwe::PackingKey;
+use crate::pir_trait::{CommunicationCost, PirProtocol};
+use crate::ring::RingElement;
+use crate::ring_regev::RLWECiphertextOwned;
 
 // ============================================================================
 // Protocol Types
@@ -129,7 +129,7 @@ impl CommunicationCost for YpirQuery {
         // Each KeySwitchKey has d × NUM_DIGITS RLWE ciphertexts
         // Each RLWE ciphertext has 2d coefficients (a and c polynomials)
         let d = self.packing_key.d;
-        let num_digits = pir::lwe_to_rlwe::NUM_DIGITS;
+        let num_digits = crate::lwe_to_rlwe::NUM_DIGITS;
         let packing_key_size = d * d * num_digits * 2 * d * std::mem::size_of::<u32>();
 
         double_query_size + packing_key_size
@@ -184,7 +184,7 @@ impl YpirAnswer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pir::ring::RingElement;
+    use crate::ring::RingElement;
 
     #[test]
     fn test_ypir_protocol_types() {

@@ -11,7 +11,7 @@
 
 use pir::matrix_database::DoublePirDatabase;
 use pir::pir_trait::{CommunicationCost, PirClient as PirClientTrait, PirServer as PirServerTrait};
-use ypir::{LweParams, PackingParams, YpirClient, YpirParams, YpirServer};
+use pir::ypir::{LweParams, PackingParams, YpirClient, YpirParams, YpirServer};
 
 // ============================================================================
 // Test Helpers
