@@ -168,6 +168,33 @@ export class PirClient {
         return ret >>> 0;
     }
     /**
+     * Hash a password to SHA-1 (uppercase hex)
+     * @param {string} password
+     * @returns {string}
+     */
+    static hash_password(password) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ptr0 = passStringToWasm0(password, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.pirclient_hash_password(ptr0, len0);
+            deferred2_0 = ret[0];
+            deferred2_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Get the LWE dimension
+     * @returns {number}
+     */
+    lwe_dimension() {
+        const ret = wasm.pirclient_lwe_dimension(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
      * XOR three records to decode the final value
      * @param {Uint8Array} rec0
      * @param {Uint8Array} rec1
@@ -187,7 +214,15 @@ export class PirClient {
         return v4;
     }
     /**
-     * Get the 3 record indices for a keyword query
+     * Get the ring dimension used for RLWE packing
+     * @returns {number}
+     */
+    ring_dimension() {
+        const ret = wasm.pirclient_ring_dimension(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * Get the 3 record indices for a keyword (hash) query
      * @param {string} keyword
      * @returns {Uint32Array}
      */
@@ -200,15 +235,28 @@ export class PirClient {
         return v2;
     }
     /**
+     * Get the 3 record indices for a password (hashes it first)
+     * @param {string} password
+     * @returns {Uint32Array}
+     */
+    get_password_indices(password) {
+        const ptr0 = passStringToWasm0(password, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.pirclient_get_password_indices(this.__wbg_ptr, ptr0, len0);
+        var v2 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v2;
+    }
+    /**
      * Create a new PIR client from setup data (JSON)
      * @param {string} setup_json
-     * @param {string} lwe_params_json
+     * @param {string} ypir_params_json
      * @param {string} filter_params_json
      */
-    constructor(setup_json, lwe_params_json, filter_params_json) {
+    constructor(setup_json, ypir_params_json, filter_params_json) {
         const ptr0 = passStringToWasm0(setup_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(lwe_params_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr1 = passStringToWasm0(ypir_params_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
         const ptr2 = passStringToWasm0(filter_params_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len2 = WASM_VECTOR_LEN;
@@ -222,7 +270,7 @@ export class PirClient {
     }
     /**
      * Generate a PIR query for a specific record index
-     * Returns JSON: { state: JsQueryState, query: JsDoublePirQuery }
+     * Returns JSON: { state: JsQueryState, query: JsYpirQuery }
      * @param {number} record_idx
      * @returns {string}
      */
@@ -246,7 +294,7 @@ export class PirClient {
     }
     /**
      * Recover a record from the server's answer
-     * Takes: state_json (JsQueryState), answer_json (JsDoublePirAnswer)
+     * Takes: state_json (JsQueryState), answer_json (JsYpirAnswer)
      * Returns: the recovered bytes as a Uint8Array
      * @param {string} state_json
      * @param {string} answer_json
@@ -341,6 +389,9 @@ function __wbg_get_imports() {
     imports.wbg.__wbg_getRandomValues_1c61fac11405ffdc = function() { return handleError(function (arg0, arg1) {
         globalThis.crypto.getRandomValues(getArrayU8FromWasm0(arg0, arg1));
     }, arguments) };
+    imports.wbg.__wbg_log_1d990106d99dacb7 = function(arg0) {
+        console.log(arg0);
+    };
     imports.wbg.__wbg_new_8a6f238a6ece86ea = function() {
         const ret = new Error();
         return ret;

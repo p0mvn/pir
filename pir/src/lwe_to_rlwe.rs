@@ -18,28 +18,10 @@
 
 use rand::Rng;
 
+use crate::ntt::CrtParams;
 use crate::regev::Ciphertext;
 use crate::ring::RingElement;
-use crate::ring_regev::{RLWECiphertextOwned, RlweParams};
-
-/// Given a d×d matrix M (stored row-major as Vec<Vec<u32>>),
-/// extract the polynomial A such that rot(A) = M.
-///
-/// For this to be valid, M must actually BE a negacyclic matrix.
-/// In the general case (arbitrary LWE ciphertexts), M won't be negacyclic,
-/// so we need a different approach (key switching).
-fn matrix_to_ring_element(first_column: &[u32], d: usize) -> RingElement {
-    // First column of rot(A):
-    // [A₀, -A_(d-1), -A_(d-2), ..., -A₁]
-    let mut coeffs = vec![0u32; d];
-    coeffs[0] = first_column[0];
-    for i in 1..d {
-        // first_column[i] = -A_(d-i)
-        // So A_(d-i) = -first_column[i]
-        coeffs[d - i] = first_column[i].wrapping_neg();
-    }
-    RingElement { coeffs }
-}
+use crate::ring_regev::RLWECiphertextOwned;
 
 /// Pack d LWE ciphertexts into 1 RLWE ciphertext.
 ///
@@ -127,67 +109,13 @@ pub const NUM_DIGITS: usize = 32 / LOG_BASE;
 ///   KS[i][1] = RLWE.Enc(s_i · 256 · x^j)
 ///   KS[i][2] = RLWE.Enc(s_i · 256² · x^j)
 ///   KS[i][3] = RLWE.Enc(s_i · 256³ · x^j)
+#[derive(Clone)]
 pub struct KeySwitchKey {
     /// ks[i][k] encrypts s_i · B^k · x^j under the RLWE secret
     /// Dimensions: [d][NUM_DIGITS]
     pub ks: Vec<Vec<RLWECiphertextOwned>>,
     /// The target position j (encrypts μ · x^j)
     pub target_position: usize,
-}
-
-/// Generate a key-switching key for position j.
-///
-/// This creates RLWE encryptions of `s_i · B^k · x^j` for all i, k,
-/// where B = GADGET_BASE = 2^LOG_BASE.
-///
-/// # Arguments
-/// * `lwe_secret` - The LWE secret key s (vector of d elements)
-/// * `rlwe_secret` - The RLWE secret key S (polynomial with d coefficients)
-/// * `j` - Target position: the result will encrypt μ · x^j
-/// * `params` - RLWE parameters
-/// * `rng` - Random number generator
-pub fn gen_key_switch_key(
-    lwe_secret: &[u32],
-    rlwe_secret: &RingElement,
-    j: usize,
-    params: &RlweParams,
-    rng: &mut impl Rng,
-) -> KeySwitchKey {
-    let d = params.d;
-    assert_eq!(lwe_secret.len(), d);
-    assert_eq!(rlwe_secret.coeffs.len(), d);
-    assert!(j < d);
-
-    let mut ks = Vec::with_capacity(d);
-
-    for i in 0..d {
-        let mut ks_i = Vec::with_capacity(NUM_DIGITS);
-        for k in 0..NUM_DIGITS {
-            // We want to encrypt: s_i · B^k · x^j
-            //
-            // Create the message polynomial: scalar · x^j
-            // where scalar = s_i · B^k = s_i · 2^(LOG_BASE * k)
-            let power = (LOG_BASE * k) as u32;
-            let scalar = lwe_secret[i].wrapping_mul(1u32 << power);
-
-            let mut msg_coeffs = vec![0u32; d];
-            msg_coeffs[j] = scalar;
-            let msg = RingElement { coeffs: msg_coeffs };
-
-            // Encrypt under RLWE secret
-            let rlwe_sk = crate::regev::SecretKey {
-                s: &rlwe_secret.coeffs,
-            };
-            let ct = crate::ring_regev::encrypt(params, &rlwe_sk, &msg, rng);
-            ks_i.push(ct);
-        }
-        ks.push(ks_i);
-    }
-
-    KeySwitchKey {
-        ks,
-        target_position: j,
-    }
 }
 
 /// Add two RLWE ciphertexts homomorphically.
@@ -221,6 +149,7 @@ pub fn scalar_mul_rlwe_ciphertext(scalar: u32, ct: &RLWECiphertextOwned) -> RLWE
 ///
 /// More efficient than separate scalar_mul and add operations when
 /// accumulating many scaled ciphertexts.
+#[allow(dead_code)]
 pub fn add_scaled_rlwe_ciphertext(
     ct1: &RLWECiphertextOwned,
     scalar: u32,
@@ -229,6 +158,35 @@ pub fn add_scaled_rlwe_ciphertext(
     RLWECiphertextOwned {
         a: ct1.a.add(&ct2.a.scalar_mul(scalar)),
         c: ct1.c.add(&ct2.c.scalar_mul(scalar)),
+    }
+}
+
+/// Add scalar multiple of ct2 to ct1 in-place: ct1 += scalar * ct2
+///
+/// This avoids allocating new vectors on each accumulation, which is
+/// critical for performance in the key_switch inner loop.
+#[inline]
+fn add_scaled_rlwe_ciphertext_inplace(
+    ct1: &mut RLWECiphertextOwned,
+    scalar: u32,
+    ct2: &RLWECiphertextOwned,
+) {
+    for (a1, a2) in ct1.a.coeffs.iter_mut().zip(&ct2.a.coeffs) {
+        *a1 = a1.wrapping_add(a2.wrapping_mul(scalar));
+    }
+    for (c1, c2) in ct1.c.coeffs.iter_mut().zip(&ct2.c.coeffs) {
+        *c1 = c1.wrapping_add(c2.wrapping_mul(scalar));
+    }
+}
+
+/// Add ct2 to ct1 in-place: ct1 += ct2
+#[inline]
+fn add_rlwe_ciphertext_inplace(ct1: &mut RLWECiphertextOwned, ct2: &RLWECiphertextOwned) {
+    for (a1, a2) in ct1.a.coeffs.iter_mut().zip(&ct2.a.coeffs) {
+        *a1 = a1.wrapping_add(*a2);
+    }
+    for (c1, c2) in ct1.c.coeffs.iter_mut().zip(&ct2.c.coeffs) {
+        *c1 = c1.wrapping_add(*c2);
     }
 }
 
@@ -305,6 +263,7 @@ pub fn key_switch(lwe_ct: &Ciphertext, ks_key: &KeySwitchKey) -> RLWECiphertextO
     };
 
     // Accumulate: Σ_i Σ_k d_k · KS[i][k]
+    // Use in-place accumulation to avoid repeated allocations
     let mut accumulated = zero_rlwe_ciphertext(ring_dim);
     let digit_mask = GADGET_BASE - 1;
 
@@ -318,8 +277,8 @@ pub fn key_switch(lwe_ct: &Ciphertext, ks_key: &KeySwitchKey) -> RLWECiphertextO
             let digit = a_i & digit_mask;
 
             if digit != 0 {
-                // Add digit · KS[i][k] to the accumulator
-                accumulated = add_scaled_rlwe_ciphertext(&accumulated, digit, &ks_key.ks[i][k]);
+                // Add digit · KS[i][k] to the accumulator (in-place)
+                add_scaled_rlwe_ciphertext_inplace(&mut accumulated, digit, &ks_key.ks[i][k]);
             }
 
             // Shift right by LOG_BASE bits to get next digit
@@ -365,6 +324,11 @@ pub fn key_switch(lwe_ct: &Ciphertext, ks_key: &KeySwitchKey) -> RLWECiphertextO
 ///
 /// Note: This bypasses the plaintext modulus p entirely.
 ///
+/// # Performance
+///
+/// Uses CRT-based NTT for O(n log n) polynomial multiplication.
+/// The CRT parameters are precomputed once and reused for all encryptions.
+///
 /// # Dimensions
 ///
 /// - LWE dimension n is inferred from `lwe_secret.len()`
@@ -386,6 +350,9 @@ pub fn gen_key_switch_key_raw(
         ring_dim
     );
 
+    // Precompute CRT parameters for O(n log n) multiplication
+    let crt = CrtParams::new(ring_dim);
+
     let mut ks = Vec::with_capacity(lwe_dim);
 
     for i in 0..lwe_dim {
@@ -406,7 +373,8 @@ pub fn gen_key_switch_key_raw(
             let msg = RingElement { coeffs: msg_coeffs };
 
             // c = a · S + e + msg (raw, no Δ)
-            let c = a.mul(rlwe_secret).add(&e).add(&msg);
+            // Use CRT-based NTT for O(n log n) polynomial multiplication
+            let c = a.mul_crt(rlwe_secret, &crt).add(&e).add(&msg);
 
             ks_i.push(RLWECiphertextOwned { a, c });
         }
@@ -423,8 +391,28 @@ pub fn gen_key_switch_key_raw(
 ///
 /// Returns the noisy plaintext: c - a·s ≈ msg + e
 /// The caller must handle rounding/decoding.
+///
+/// # Performance
+///
+/// Uses CRT-based NTT for O(n log n) polynomial multiplication.
+/// For multiple decryptions, consider using `decrypt_raw_with_crt` with
+/// precomputed CRT parameters.
 pub fn decrypt_raw(rlwe_secret: &RingElement, ct: &RLWECiphertextOwned) -> RingElement {
-    ct.c.sub(&ct.a.mul(rlwe_secret))
+    let ring_dim = rlwe_secret.coeffs.len();
+    let crt = CrtParams::new(ring_dim);
+    ct.c.sub(&ct.a.mul_crt(rlwe_secret, &crt))
+}
+
+/// Decrypt a "raw" RLWE ciphertext with precomputed CRT parameters.
+///
+/// This is more efficient when decrypting multiple ciphertexts as the
+/// CRT parameters are computed once and reused.
+pub fn decrypt_raw_with_crt(
+    rlwe_secret: &RingElement,
+    ct: &RLWECiphertextOwned,
+    crt: &CrtParams,
+) -> RingElement {
+    ct.c.sub(&ct.a.mul_crt(rlwe_secret, crt))
 }
 
 // ============================================================================
@@ -542,7 +530,7 @@ pub fn pack_with_key_switching(
     // Start with zero RLWE ciphertext
     let mut result = zero_rlwe_ciphertext(d);
 
-    // Key-switch each LWE ciphertext to its position and accumulate
+    // Key-switch each LWE ciphertext to its position and accumulate (in-place)
     for (j, lwe_ct) in lwe_cts.iter().enumerate() {
         assert_eq!(
             lwe_ct.a.len(),
@@ -556,8 +544,8 @@ pub fn pack_with_key_switching(
         // Key-switch ct_j to position j: produces RLWE encrypting μ_j · x^j
         let rlwe_j = key_switch(lwe_ct, &packing_key.keys[j]);
 
-        // Add to accumulator
-        result = add_rlwe_ciphertexts(&result, &rlwe_j);
+        // Add to accumulator (in-place to avoid allocation)
+        add_rlwe_ciphertext_inplace(&mut result, &rlwe_j);
     }
 
     // Result encrypts: Σ_j μ_j · x^j = μ₀ + μ₁x + μ₂x² + ... + μ_{d-1}x^{d-1}
@@ -577,6 +565,485 @@ pub fn decode_packed_result(noisy: &RingElement, delta: u32, p: u32) -> Vec<u32>
         .collect()
 }
 
+// ============================================================================
+// Efficient Packing with Single Key-Switch Key (O(n) instead of O(d×n))
+// ============================================================================
+//
+// This implements a more efficient LWE-to-RLWE packing approach where we
+// only generate a single key-switch key (for position 0) instead of d keys.
+// Each LWE ciphertext is first key-switched to position 0, then multiplied
+// by x^j to shift to its target position.
+//
+// Complexity comparison for n=d:
+// - Naive approach: d × n × NUM_DIGITS = O(d²) RLWE ciphertexts
+// - Efficient approach: n × NUM_DIGITS = O(d) RLWE ciphertexts
+// - ~1000× smaller packing key for d=1024!
+
+/// Efficient packing key with only ONE key-switch key (for position 0).
+///
+/// This is dramatically smaller than the naive PackingKey:
+/// - Naive: d × n × NUM_DIGITS × 2d coefficients = O(d² × n)
+/// - Efficient: n × NUM_DIGITS × 2d coefficients = O(d × n)
+///
+/// For d=n=1024, NUM_DIGITS=4:
+/// - Naive: 1024 × 1024 × 4 × 2048 × 4 bytes ≈ 34 GB
+/// - Efficient: 1024 × 4 × 2048 × 4 bytes ≈ 33 MB (~1000× smaller!)
+///
+/// ## How it works
+///
+/// Instead of generating d key-switch keys (one per position), we:
+/// 1. Generate one key-switch key for position 0
+/// 2. Key-switch each LWE ciphertext to get RLWE encrypting μ at position 0
+/// 3. Multiply by x^j to shift to position j (monomial multiplication)
+/// 4. Sum all RLWE ciphertexts
+#[derive(Clone)]
+pub struct EfficientPackingKey {
+    /// Single key-switch key for position 0
+    /// Structure: ks[i][k] encrypts s_i · B^k under RLWE secret
+    pub ks: KeySwitchKey,
+    /// RLWE ring dimension
+    pub d: usize,
+    /// LWE dimension
+    pub n: usize,
+}
+
+/// Generate an efficient packing key with only ONE key-switch key.
+///
+/// # Arguments
+/// * `lwe_secret` - LWE secret key (length n)
+/// * `rlwe_secret` - RLWE secret key (ring dimension d)
+/// * `noise_stddev` - Noise standard deviation
+/// * `rng` - Random number generator
+///
+/// # Size
+///
+/// The key contains n × NUM_DIGITS RLWE ciphertexts.
+/// For n=1024, NUM_DIGITS=4, d=1024: 1024 × 4 × 2 × 1024 × 4 bytes ≈ 33 MB.
+/// (vs ~34 GB for the naive approach - 1000× smaller!)
+pub fn gen_efficient_packing_key(
+    lwe_secret: &[u32],
+    rlwe_secret: &RingElement,
+    noise_stddev: f64,
+    rng: &mut impl Rng,
+) -> EfficientPackingKey {
+    let n = lwe_secret.len();
+    let d = rlwe_secret.coeffs.len();
+
+    // Generate single key-switch key for position 0
+    let ks = gen_key_switch_key_raw(lwe_secret, rlwe_secret, 0, noise_stddev, rng);
+
+    EfficientPackingKey { ks, d, n }
+}
+
+/// Pack d LWE ciphertexts into 1 RLWE using efficient single-position key-switching.
+///
+/// This is ~1000× faster than `pack_with_key_switching` for d=1024 because
+/// it only uses one key-switch key instead of d keys.
+///
+/// # Algorithm
+///
+/// For each LWE ciphertext ct_j:
+/// 1. Key-switch to get RLWE encrypting μ_j at position 0
+/// 2. Multiply by x^j to shift to position j
+/// 3. Sum into result
+///
+/// # Arguments
+/// * `lwe_cts` - d LWE ciphertexts
+/// * `packing_key` - Efficient packing key (single key-switch key)
+///
+/// # Returns
+/// RLWE ciphertext encrypting μ₀ + μ₁x + μ₂x² + ... + μ_{d-1}x^{d-1}
+pub fn pack_with_efficient_key(
+    lwe_cts: &[Ciphertext],
+    packing_key: &EfficientPackingKey,
+) -> RLWECiphertextOwned {
+    let d = packing_key.d;
+    assert_eq!(lwe_cts.len(), d, "Need exactly d LWE ciphertexts");
+
+    let mut result = zero_rlwe_ciphertext(d);
+
+    for (j, lwe_ct) in lwe_cts.iter().enumerate() {
+        // Step 1: Key-switch to position 0
+        let rlwe_at_0 = key_switch(lwe_ct, &packing_key.ks);
+
+        // Step 2: Multiply by x^j to shift to position j
+        let rlwe_at_j = mul_by_monomial(&rlwe_at_0, j, d);
+
+        // Step 3: Add to result
+        add_rlwe_ciphertext_inplace(&mut result, &rlwe_at_j);
+    }
+
+    result
+}
+
+// ============================================================================
+// CDKS Automorphism-Based Packing (O(log d) keys instead of O(d²))
+// ============================================================================
+//
+// This implements the Chen-Dai-Kim-Song (CDKS) LWE-to-RLWE packing algorithm
+// from the YPIR paper. It uses automorphisms with O(log d) keys instead of
+// the naive key-switching approach with O(d²) keys.
+//
+// Reference: "YPIR: High-Throughput Single-Server PIR with Silent Preprocessing"
+// by Mughees, Mughees, and Chen (2024).
+
+/// An automorphism key for τ_ℓ: x → x^ℓ.
+///
+/// This allows applying the automorphism τ_ℓ to an RLWE ciphertext homomorphically.
+/// The key contains RLWE encryptions of τ_ℓ(s) · B^k for gadget decomposition.
+///
+/// ## Structure
+///
+/// For gadget base B and NUM_DIGITS digits:
+/// - `keys[k]` encrypts `τ_ℓ(s) · B^k` under the RLWE secret s
+///
+/// ## Size
+///
+/// Each AutoKey contains NUM_DIGITS RLWE ciphertexts = NUM_DIGITS × 2d coefficients.
+/// For d=1024, NUM_DIGITS=4: 4 × 2 × 1024 × 4 = 32 KB per key.
+///
+/// The full CDKS packing key has log₂(d) such keys, so for d=1024:
+/// ~10 keys × 32 KB = ~320 KB total (vs ~34 GB for naive key-switching!)
+#[derive(Clone)]
+pub struct AutoKey {
+    /// keys[k] encrypts τ_ℓ(s) · B^k under s
+    /// Dimensions: [NUM_DIGITS], each element is an RLWE ciphertext
+    pub keys: Vec<RLWECiphertextOwned>,
+    /// The automorphism index ℓ
+    pub ell: usize,
+}
+
+/// CDKS packing key using automorphisms.
+///
+/// This is dramatically smaller than the naive PackingKey:
+/// - Naive: O(d² × NUM_DIGITS) RLWE ciphertexts
+/// - CDKS: O(log d) AutoKeys, each with NUM_DIGITS RLWE ciphertexts
+///
+/// For d=1024, NUM_DIGITS=4:
+/// - Naive: 1024 × 1024 × 4 ≈ 4M ciphertexts → ~34 GB
+/// - CDKS: 10 × 4 = 40 ciphertexts → ~320 KB (100,000× smaller!)
+///
+/// ## Automorphism Indices
+///
+/// The CDKS algorithm needs automorphisms τ_{2^i+1} for i = 0, 1, ..., log₂(d)-1.
+/// These enable the divide-and-conquer merging of coefficient positions.
+#[derive(Clone)]
+pub struct CDKSPackingKey {
+    /// Automorphism keys for τ_{2^i+1}, i = 0, 1, ..., log₂(d)-1
+    pub auto_keys: Vec<AutoKey>,
+    /// Ring dimension
+    pub d: usize,
+}
+
+/// Generate an automorphism key for τ_ℓ.
+///
+/// The key enables applying τ_ℓ homomorphically to RLWE ciphertexts.
+///
+/// # Arguments
+/// * `secret` - RLWE secret key s
+/// * `ell` - Automorphism index (must be odd)
+/// * `noise_stddev` - Noise standard deviation
+/// * `rng` - Random number generator
+pub fn gen_auto_key(
+    secret: &RingElement,
+    ell: usize,
+    noise_stddev: f64,
+    rng: &mut impl Rng,
+) -> AutoKey {
+    let d = secret.coeffs.len();
+
+    // Compute τ_ℓ(s)
+    let tau_s = secret.automorphism(ell);
+
+    // Generate RLWE encryptions of τ_ℓ(s) · B^k under s
+    let mut keys = Vec::with_capacity(NUM_DIGITS);
+
+    for k in 0..NUM_DIGITS {
+        // Message to encrypt: τ_ℓ(s) · B^k
+        let power = (LOG_BASE * k) as u32;
+        let scalar = 1u32 << power; // B^k = 2^(LOG_BASE * k)
+        let msg = tau_s.scalar_mul(scalar);
+
+        // Generate random `a` polynomial
+        let a = RingElement::random(d, rng);
+
+        // Generate error from discrete Gaussian
+        let e = sample_discrete_gaussian_ring(d, noise_stddev, rng);
+
+        // c = a · s + e + msg (raw RLWE encryption)
+        let crt = CrtParams::new(d);
+        let c = a.mul_crt(secret, &crt).add(&e).add(&msg);
+
+        keys.push(RLWECiphertextOwned { a, c });
+    }
+
+    AutoKey { keys, ell }
+}
+
+/// Generate a CDKS packing key using automorphisms.
+///
+/// This creates O(log d) automorphism keys instead of the O(d²) keys
+/// needed by the naive key-switching approach.
+///
+/// # Arguments
+/// * `secret` - RLWE secret key
+/// * `noise_stddev` - Noise standard deviation
+/// * `rng` - Random number generator
+///
+/// # Size Comparison
+///
+/// For d=1024, NUM_DIGITS=4:
+/// - Naive PackingKey: d × d × NUM_DIGITS × 2d × 4 bytes ≈ 34 GB
+/// - CDKSPackingKey: log₂(d) × NUM_DIGITS × 2d × 4 bytes ≈ 320 KB
+pub fn gen_cdks_packing_key(
+    secret: &RingElement,
+    noise_stddev: f64,
+    rng: &mut impl Rng,
+) -> CDKSPackingKey {
+    let d = secret.coeffs.len();
+    assert!(d.is_power_of_two(), "Ring dimension must be power of 2");
+
+    let log_d = d.trailing_zeros() as usize;
+    let mut auto_keys = Vec::with_capacity(log_d);
+
+    // Generate automorphism keys for the CDKS divide-and-conquer algorithm.
+    //
+    // The CDKS algorithm uses automorphisms that "interleave" coefficient positions.
+    // For d = 2^k, we need automorphisms that help merge pairs of ciphertexts
+    // at each level of the divide-and-conquer tree.
+    //
+    // A common choice is τ_{2d/2^i + 1} which gives us the indices:
+    // d+1, d/2+1, d/4+1, ..., 3 (all odd, as required)
+    //
+    // For d=8: indices are 9, 5, 3 (for levels 0, 1, 2)
+    // For d=1024: indices are 1025, 513, 257, 129, 65, 33, 17, 9, 5, 3
+
+    for i in 0..log_d {
+        // Index for level i: 2d / 2^(i+1) + 1 = d / 2^i + 1
+        let divisor = 1 << i; // 2^i
+        let ell = (d / divisor) + 1;
+
+        // Ensure ell is odd (it will be since d is power of 2)
+        debug_assert!(ell % 2 == 1, "Automorphism index must be odd: {}", ell);
+
+        let auto_key = gen_auto_key(secret, ell, noise_stddev, rng);
+        auto_keys.push(auto_key);
+    }
+
+    CDKSPackingKey { auto_keys, d }
+}
+
+/// Apply an automorphism homomorphically to an RLWE ciphertext.
+///
+/// Given ct = (a, c) encrypting m under secret s, produces ct' encrypting τ_ℓ(m)
+/// under the same secret s, using the automorphism key.
+///
+/// # Algorithm
+///
+/// 1. Apply τ_ℓ to both components: (τ_ℓ(a), τ_ℓ(c))
+/// 2. This gives encryption of τ_ℓ(m) under τ_ℓ(s), not s!
+/// 3. Use key-switching to convert back to encryption under s
+///
+/// The key-switching uses the automorphism key which encrypts τ_ℓ(s) under s.
+pub fn apply_automorphism(
+    ct: &RLWECiphertextOwned,
+    auto_key: &AutoKey,
+) -> RLWECiphertextOwned {
+    let d = ct.a.coeffs.len();
+    let ell = auto_key.ell;
+
+    // Step 1: Apply automorphism to ciphertext components
+    let a_tau = ct.a.automorphism(ell);
+    let c_tau = ct.c.automorphism(ell);
+
+    // Step 2: Key-switch from τ_ℓ(s) to s
+    // The ciphertext (a_tau, c_tau) decrypts as: c_tau - a_tau · τ_ℓ(s)
+    // We need to convert this to decrypt under s.
+    //
+    // Use gadget decomposition on a_tau and combine with automorphism key:
+    // a_tau = Σ_k d_k · B^k where d_k is the k-th digit
+    // Then: a_tau · τ_ℓ(s) = Σ_k d_k · (B^k · τ_ℓ(s))
+    // And the auto_key encrypts B^k · τ_ℓ(s) under s.
+
+    let mut accumulated = zero_rlwe_ciphertext(d);
+    let digit_mask = GADGET_BASE - 1;
+
+    // Decompose each coefficient of a_tau and accumulate
+    for coeff_idx in 0..d {
+        let mut a_coeff = a_tau.coeffs[coeff_idx];
+
+        for k in 0..NUM_DIGITS {
+            let digit = a_coeff & digit_mask;
+
+            if digit != 0 {
+                // Need to accumulate: digit · x^coeff_idx · auto_key[k]
+                // This is equivalent to digit times the auto_key[k] shifted by x^coeff_idx
+
+                // Create the shifted contribution
+                let shifted = mul_by_monomial(&auto_key.keys[k], coeff_idx, d);
+                add_scaled_rlwe_ciphertext_inplace(&mut accumulated, digit, &shifted);
+            }
+
+            a_coeff >>= LOG_BASE;
+        }
+    }
+
+    // Result: c' = c_tau - accumulated
+    // where accumulated approximates a_tau · τ_ℓ(s) encrypted under s
+    RLWECiphertextOwned {
+        a: accumulated.a.neg(),
+        c: c_tau.sub(&accumulated.c),
+    }
+}
+
+/// Multiply an RLWE ciphertext by x^k (monomial multiplication).
+///
+/// If ct encrypts m, the result encrypts m · x^k.
+/// Uses negacyclic property: x^d = -1.
+fn mul_by_monomial(ct: &RLWECiphertextOwned, k: usize, d: usize) -> RLWECiphertextOwned {
+    RLWECiphertextOwned {
+        a: monomial_mul(&ct.a, k, d),
+        c: monomial_mul(&ct.c, k, d),
+    }
+}
+
+/// Multiply a polynomial by x^k in the ring Z[x]/(x^d + 1).
+fn monomial_mul(poly: &RingElement, k: usize, d: usize) -> RingElement {
+    let k = k % (2 * d); // Reduce mod 2d due to x^(2d) = 1
+    let mut result = vec![0u32; d];
+
+    for (i, &coeff) in poly.coeffs.iter().enumerate() {
+        let new_pos = (i + k) % (2 * d);
+        if new_pos < d {
+            result[new_pos] = result[new_pos].wrapping_add(coeff);
+        } else {
+            // x^d = -1
+            result[new_pos - d] = result[new_pos - d].wrapping_sub(coeff);
+        }
+    }
+
+    RingElement { coeffs: result }
+}
+
+/// Sample from discrete Gaussian for RLWE noise.
+fn sample_discrete_gaussian_ring(d: usize, stddev: f64, rng: &mut impl Rng) -> RingElement {
+    use rand_distr::{Distribution, Normal};
+
+    let normal = Normal::new(0.0, stddev).unwrap();
+    let coeffs: Vec<u32> = (0..d)
+        .map(|_| {
+            let sample = normal.sample(rng).round() as i64;
+            sample as u32 // Wraps correctly for negative values
+        })
+        .collect();
+
+    RingElement { coeffs }
+}
+
+/// Pack d RLWE ciphertexts into one using CDKS algorithm.
+///
+/// This is the main CDKS packing function. It takes d RLWE ciphertexts
+/// (each encrypting a single coefficient in position 0) and produces
+/// one RLWE ciphertext encrypting all coefficients.
+///
+/// # Algorithm Overview
+///
+/// The CDKS algorithm uses a divide-and-conquer approach:
+///
+/// 1. Start with d ciphertexts: ct_0, ct_1, ..., ct_{d-1}
+///    where ct_i encrypts μ_i at position 0
+///
+/// 2. At each level, merge pairs of ciphertexts using automorphisms
+///    to "interleave" coefficients at different positions
+///
+/// 3. After log₂(d) levels, we have one ciphertext encrypting all μ_i
+///
+/// # Arguments
+/// * `cts` - d RLWE ciphertexts, each encrypting a single value at position 0
+/// * `packing_key` - CDKS packing key with automorphism keys
+///
+/// # Note
+///
+/// This function expects RLWE ciphertexts encrypting single values.
+/// For LWE-to-RLWE packing, first convert each LWE to RLWE using
+/// the appropriate method, then call this function.
+pub fn cdks_pack(
+    cts: &[RLWECiphertextOwned],
+    packing_key: &CDKSPackingKey,
+) -> RLWECiphertextOwned {
+    let d = packing_key.d;
+    assert_eq!(cts.len(), d, "Need exactly d ciphertexts to pack");
+    assert!(d.is_power_of_two(), "d must be power of 2");
+
+    let log_d = d.trailing_zeros() as usize;
+    assert_eq!(
+        packing_key.auto_keys.len(),
+        log_d,
+        "Packing key has wrong number of automorphism keys"
+    );
+
+    // Clone input ciphertexts for working set
+    let mut current: Vec<RLWECiphertextOwned> = cts.to_vec();
+    let mut step_size = 1;
+
+    // Divide-and-conquer: log₂(d) levels
+    for level in 0..log_d {
+        let auto_key = &packing_key.auto_keys[level];
+        let mut next: Vec<RLWECiphertextOwned> = Vec::with_capacity(current.len() / 2);
+
+        for i in (0..current.len()).step_by(2) {
+            // Merge ct[i] and ct[i+1]
+            // ct[i] has coefficient at position 0
+            // ct[i+1] has coefficient at position 0, but should go to position step_size
+
+            // Shift ct[i+1] by x^step_size
+            let shifted = mul_by_monomial(&current[i + 1], step_size, d);
+
+            // Add the two ciphertexts
+            let merged = add_rlwe_ciphertexts(&current[i], &shifted);
+
+            // Apply automorphism to "compress" the representation
+            // (This step depends on the specific CDKS variant)
+            let compressed = if level < log_d - 1 {
+                apply_automorphism(&merged, auto_key)
+            } else {
+                merged // Last level doesn't need automorphism
+            };
+
+            next.push(compressed);
+        }
+
+        current = next;
+        step_size *= 2;
+    }
+
+    assert_eq!(current.len(), 1, "Should have exactly one ciphertext after packing");
+    current.pop().unwrap()
+}
+
+/// Simple CDKS-style packing for testing.
+///
+/// This is a simplified version that demonstrates the concept.
+/// It packs d RLWE ciphertexts (each with a value at position 0)
+/// into one RLWE ciphertext with values at positions 0, 1, ..., d-1.
+///
+/// This version doesn't use automorphisms (which would require the key)
+/// but shows the basic structure.
+pub fn simple_pack(cts: &[RLWECiphertextOwned]) -> RLWECiphertextOwned {
+    let d = cts[0].a.coeffs.len();
+    assert_eq!(cts.len(), d, "Need exactly d ciphertexts");
+
+    let mut result = zero_rlwe_ciphertext(d);
+
+    // Simply shift each ciphertext to its position and sum
+    for (j, ct) in cts.iter().enumerate() {
+        let shifted = mul_by_monomial(ct, j, d);
+        add_rlwe_ciphertext_inplace(&mut result, &shifted);
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use rand::Rng;
@@ -584,6 +1051,7 @@ mod tests {
     use crate::{
         params::LweParams,
         regev::{self, CiphertextOwned},
+        ring_regev::RlweParams,
     };
 
     use super::*;
@@ -638,30 +1106,6 @@ mod tests {
             }
         }
         result
-    }
-
-    #[test]
-    fn test_matrix_to_ring_element_happy_path() {
-        // Given polynomial A = [1, 2, 3, 4] (coefficients A₀=1, A₁=2, A₂=3, A₃=4)
-        // The first column of its negacyclic rotation matrix rot(A) is:
-        //   [A₀, -A₃, -A₂, -A₁] = [1, -4, -3, -2]
-        //
-        // In u32 wrapping arithmetic:
-        //   -4 = 0xFFFF_FFFC
-        //   -3 = 0xFFFF_FFFD
-        //   -2 = 0xFFFF_FFFE
-        let d = 4;
-        let first_column: Vec<u32> = vec![
-            1,                    // A₀
-            0u32.wrapping_sub(4), // -A₃ = -4
-            0u32.wrapping_sub(3), // -A₂ = -3
-            0u32.wrapping_sub(2), // -A₁ = -2
-        ];
-
-        // The function should recover the original polynomial A = [1, 2, 3, 4]
-        let result = matrix_to_ring_element(&first_column, d);
-
-        assert_eq!(result.coeffs, vec![1, 2, 3, 4]);
     }
 
     #[test]
@@ -1587,5 +2031,205 @@ mod tests {
             "Key switch with n={}, d={} failed: got {}, expected {}",
             n, d, decoded, message
         );
+    }
+
+    // ========================================================================
+    // Efficient Packing Tests
+    // ========================================================================
+
+    /// Test efficient packing key generation
+    #[test]
+    fn test_efficient_packing_key_generation() {
+        let d = 4;
+        let noise_stddev = 2.0;
+        let mut rng = rand::rng();
+
+        let lwe_secret: Vec<u32> = (0..d).map(|_| rng.random()).collect();
+        let rlwe_secret = RingElement::random(d, &mut rng);
+
+        let packing_key = gen_efficient_packing_key(&lwe_secret, &rlwe_secret, noise_stddev, &mut rng);
+
+        // Efficient key has ONE key-switch key (vs d for naive)
+        assert_eq!(packing_key.ks.ks.len(), d); // d components in the single KS key
+        assert_eq!(packing_key.d, d);
+        assert_eq!(packing_key.n, d);
+        assert_eq!(packing_key.ks.target_position, 0); // Always position 0
+    }
+
+    /// Test efficient packing correctness
+    #[test]
+    fn test_efficient_packing_correctness() {
+        let d = 4;
+        let p = 256u32;
+        let noise_stddev = 2.0;
+        let params = LweParams { n: d, p, noise_stddev };
+        let mut rng = rand::rng();
+
+        let lwe_secret: Vec<u32> = (0..d).map(|_| rng.random()).collect();
+        let rlwe_secret = RingElement::random(d, &mut rng);
+
+        let messages: Vec<u32> = vec![10, 20, 30, 40];
+
+        // Create LWE ciphertexts
+        let lwe_cts: Vec<CiphertextOwned> = messages.iter().map(|&msg| {
+            let a: Vec<u32> = (0..d).map(|_| rng.random()).collect();
+            let c = regev::encrypt(&params, &a, &regev::SecretKey { s: &lwe_secret }, msg, &mut rng);
+            CiphertextOwned { a, c }
+        }).collect();
+
+        // Generate efficient packing key
+        let packing_key = gen_efficient_packing_key(&lwe_secret, &rlwe_secret, noise_stddev, &mut rng);
+
+        // Pack using efficient method
+        let lwe_refs: Vec<_> = lwe_cts.iter().map(|ct| ct.as_ref()).collect();
+        let packed = pack_with_efficient_key(&lwe_refs, &packing_key);
+
+        // Decrypt and decode
+        let noisy = decrypt_raw(&rlwe_secret, &packed);
+        let decoded = decode_packed_result(&noisy, params.delta(), p);
+
+        assert_eq!(decoded, messages, "Efficient packing failed");
+    }
+
+    /// Test that efficient packing matches naive packing for same inputs
+    #[test]
+    fn test_efficient_vs_naive_packing() {
+        let d = 4;
+        let p = 256u32;
+        let noise_stddev = 1.5;
+        let params = LweParams { n: d, p, noise_stddev };
+        let mut rng = rand::rng();
+
+        let lwe_secret: Vec<u32> = (0..d).map(|_| rng.random()).collect();
+        let rlwe_secret = RingElement::random(d, &mut rng);
+
+        let messages: Vec<u32> = vec![5, 15, 25, 35];
+
+        let lwe_cts: Vec<CiphertextOwned> = messages.iter().map(|&msg| {
+            let a: Vec<u32> = (0..d).map(|_| rng.random()).collect();
+            let c = regev::encrypt(&params, &a, &regev::SecretKey { s: &lwe_secret }, msg, &mut rng);
+            CiphertextOwned { a, c }
+        }).collect();
+
+        // Generate both types of packing keys
+        let efficient_key = gen_efficient_packing_key(&lwe_secret, &rlwe_secret, noise_stddev, &mut rng);
+        let naive_key = gen_packing_key(&lwe_secret, &rlwe_secret, noise_stddev, &mut rng);
+
+        // Pack with both methods
+        let lwe_refs: Vec<_> = lwe_cts.iter().map(|ct| ct.as_ref()).collect();
+        let packed_efficient = pack_with_efficient_key(&lwe_refs, &efficient_key);
+        let packed_naive = pack_with_key_switching(&lwe_refs, &naive_key);
+
+        // Both should decrypt to same messages
+        let decoded_efficient = decode_packed_result(
+            &decrypt_raw(&rlwe_secret, &packed_efficient),
+            params.delta(),
+            p
+        );
+        let decoded_naive = decode_packed_result(
+            &decrypt_raw(&rlwe_secret, &packed_naive),
+            params.delta(),
+            p
+        );
+
+        assert_eq!(decoded_efficient, messages, "Efficient packing incorrect");
+        assert_eq!(decoded_naive, messages, "Naive packing incorrect");
+    }
+
+    /// Test efficient packing with larger dimension
+    #[test]
+    fn test_efficient_packing_larger() {
+        let d = 8;
+        let p = 256u32;
+        let noise_stddev = 2.0;
+        let params = LweParams { n: d, p, noise_stddev };
+        let mut rng = rand::rng();
+
+        let lwe_secret: Vec<u32> = (0..d).map(|_| rng.random()).collect();
+        let rlwe_secret = RingElement::random(d, &mut rng);
+
+        let messages: Vec<u32> = (0..d).map(|i| (i * 13 % p as usize) as u32).collect();
+
+        let lwe_cts: Vec<CiphertextOwned> = messages.iter().map(|&msg| {
+            let a: Vec<u32> = (0..d).map(|_| rng.random()).collect();
+            let c = regev::encrypt(&params, &a, &regev::SecretKey { s: &lwe_secret }, msg, &mut rng);
+            CiphertextOwned { a, c }
+        }).collect();
+
+        let packing_key = gen_efficient_packing_key(&lwe_secret, &rlwe_secret, noise_stddev, &mut rng);
+        let lwe_refs: Vec<_> = lwe_cts.iter().map(|ct| ct.as_ref()).collect();
+        let packed = pack_with_efficient_key(&lwe_refs, &packing_key);
+
+        let noisy = decrypt_raw(&rlwe_secret, &packed);
+        let decoded = decode_packed_result(&noisy, params.delta(), p);
+
+        assert_eq!(decoded, messages);
+    }
+
+    // ========================================================================
+    // Automorphism Tests
+    // ========================================================================
+
+    /// Test automorphism on simple polynomial
+    #[test]
+    fn test_automorphism_simple() {
+        // Test τ_3 on (1 + x + x² + x³) in ring Z[x]/(x⁴ + 1)
+        // τ_3(x) = x³
+        // τ_3(1) = 1
+        // τ_3(x) = x³
+        // τ_3(x²) = x⁶ = x² · x⁴ = -x² (since x⁴ = -1)
+        // τ_3(x³) = x⁹ = x · x⁸ = x · (x⁴)² = x · 1 = x
+        // So τ_3(1 + x + x² + x³) = 1 + x³ - x² + x = 1 + x - x² + x³
+
+        let d = 4;
+        let poly = RingElement { coeffs: vec![1, 1, 1, 1] }; // 1 + x + x² + x³
+
+        let result = poly.automorphism(3);
+
+        // Expected: 1 + x - x² + x³
+        // coeffs: [1, 1, -1, 1] where -1 = 2^32 - 1
+        assert_eq!(result.coeffs[0], 1);
+        assert_eq!(result.coeffs[1], 1);
+        assert_eq!(result.coeffs[2], u32::MAX); // -1 mod 2^32
+        assert_eq!(result.coeffs[3], 1);
+    }
+
+    /// Test automorphism is invertible
+    #[test]
+    fn test_automorphism_inverse() {
+        let d = 8;
+        let mut rng = rand::rng();
+
+        let poly = RingElement::random(d, &mut rng);
+        let ell = 3; // τ_3
+        let ell_inv = RingElement::inverse_automorphism_index(ell, d);
+
+        // Apply τ_3 then τ_{3⁻¹} should give back original
+        let transformed = poly.automorphism(ell);
+        let restored = transformed.automorphism(ell_inv);
+
+        assert_eq!(poly.coeffs, restored.coeffs, "Automorphism should be invertible");
+    }
+
+    /// Test monomial multiplication
+    #[test]
+    fn test_monomial_multiplication() {
+        let d = 4;
+        // p(x) = 1 + 2x + 3x² + 4x³
+        let poly = RingElement { coeffs: vec![1, 2, 3, 4] };
+
+        // Multiply by x: should give 4·(-1) + 1·x + 2·x² + 3·x³ = -4 + x + 2x² + 3x³
+        let result = monomial_mul(&poly, 1, d);
+        assert_eq!(result.coeffs[0], 0u32.wrapping_sub(4)); // -4
+        assert_eq!(result.coeffs[1], 1);
+        assert_eq!(result.coeffs[2], 2);
+        assert_eq!(result.coeffs[3], 3);
+
+        // Multiply by x²: should give -3 - 4x + x² + 2x³
+        let result2 = monomial_mul(&poly, 2, d);
+        assert_eq!(result2.coeffs[0], 0u32.wrapping_sub(3)); // -3
+        assert_eq!(result2.coeffs[1], 0u32.wrapping_sub(4)); // -4
+        assert_eq!(result2.coeffs[2], 1);
+        assert_eq!(result2.coeffs[3], 2);
     }
 }

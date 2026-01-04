@@ -386,12 +386,97 @@ impl RingElement {
         Self { coeffs }
     }
 
+    // ========================================================================
+    // Automorphism Operations (for CDKS packing)
+    // ========================================================================
+
+    /// Apply automorphism τ_ℓ: x → x^ℓ to this polynomial.
+    ///
+    /// In the ring R = Z_q[x]/(x^d + 1), the automorphism τ_ℓ maps x to x^ℓ.
+    /// For a polynomial p(x) = Σᵢ cᵢxⁱ, we get τ_ℓ(p)(x) = p(x^ℓ) = Σᵢ cᵢx^(iℓ).
+    ///
+    /// The key constraint: ℓ must be odd and coprime to 2d for the automorphism
+    /// to be well-defined on the ring R = Z[x]/(x^d + 1).
+    ///
+    /// # Coefficient Mapping
+    ///
+    /// For coefficient at position i:
+    /// - New position = (i * ℓ) mod 2d
+    /// - If new_pos >= d: coefficient is negated and placed at (new_pos - d)
+    ///
+    /// # Arguments
+    /// * `ell` - The automorphism index (must be odd)
+    ///
+    /// # Panics
+    /// Panics if ℓ is even.
+    pub fn automorphism(&self, ell: usize) -> Self {
+        let d = self.coeffs.len();
+        assert!(ell % 2 == 1, "Automorphism index must be odd, got {}", ell);
+
+        let mut result = vec![0u32; d];
+        let two_d = 2 * d;
+
+        for (i, &coeff) in self.coeffs.iter().enumerate() {
+            // New position = (i * ℓ) mod 2d
+            let new_pos = (i * ell) % two_d;
+
+            if new_pos < d {
+                // Direct placement
+                result[new_pos] = result[new_pos].wrapping_add(coeff);
+            } else {
+                // x^d = -1, so x^(new_pos) = -x^(new_pos - d)
+                result[new_pos - d] = result[new_pos - d].wrapping_sub(coeff);
+            }
+        }
+
+        Self { coeffs: result }
+    }
+
+    /// Compute the inverse automorphism index.
+    ///
+    /// For automorphism τ_ℓ, the inverse τ_{ℓ⁻¹} satisfies τ_ℓ ∘ τ_{ℓ⁻¹} = identity.
+    /// We need ℓ⁻¹ such that ℓ × ℓ⁻¹ ≡ 1 (mod 2d).
+    ///
+    /// # Arguments
+    /// * `ell` - The automorphism index
+    /// * `d` - Ring dimension
+    ///
+    /// # Returns
+    /// The inverse index ℓ⁻¹ mod 2d
+    pub fn inverse_automorphism_index(ell: usize, d: usize) -> usize {
+        let two_d = 2 * d;
+        // Use extended Euclidean algorithm to find modular inverse
+        Self::mod_inverse(ell, two_d).expect("Automorphism index must be coprime to 2d")
+    }
+
+    /// Extended Euclidean algorithm to compute modular inverse.
+    fn mod_inverse(a: usize, m: usize) -> Option<usize> {
+        let (mut old_r, mut r) = (a as i64, m as i64);
+        let (mut old_s, mut s) = (1i64, 0i64);
+
+        while r != 0 {
+            let quotient = old_r / r;
+            (old_r, r) = (r, old_r - quotient * r);
+            (old_s, s) = (s, old_s - quotient * s);
+        }
+
+        if old_r != 1 {
+            return None; // No inverse exists
+        }
+
+        // Ensure positive result
+        let result = ((old_s % m as i64) + m as i64) % m as i64;
+        Some(result as usize)
+    }
+
     /// Multiply using NTT (O(n log n) instead of O(n²)).
     ///
     /// **Note**: This uses the NTT-friendly prime q = 2013265921 instead of 2^32.
     /// For most cryptographic applications with reasonable coefficient sizes,
     /// this gives identical results. For very large coefficients that wrap
     /// around 2^32, results may differ.
+    ///
+    /// For exact q = 2^32 arithmetic, use `mul_crt` instead.
     ///
     /// # Arguments
     /// * `other` - The polynomial to multiply with
@@ -418,6 +503,27 @@ impl RingElement {
         // Convert back to u32
         Self {
             coeffs: ntt::ntt_coeffs_to_u32(&c_ntt),
+        }
+    }
+
+    /// Multiply using CRT-based NTT (O(n log n) instead of O(n²)).
+    ///
+    /// This uses Chinese Remainder Theorem with three NTT-friendly primes to
+    /// compute the exact polynomial product, then reduces mod 2^32. This gives
+    /// results identical to schoolbook multiplication with wrapping u32 arithmetic.
+    ///
+    /// Use this for cryptographic operations that require exact q = 2^32 modulus.
+    ///
+    /// # Arguments
+    /// * `other` - The polynomial to multiply with
+    /// * `crt` - Precomputed CRT parameters (reuse for efficiency)
+    pub fn mul_crt(&self, other: &Self, crt: &ntt::CrtParams) -> Self {
+        let d = self.coeffs.len();
+        assert_eq!(d, other.coeffs.len());
+        assert_eq!(d, crt.ntt1.d);
+
+        Self {
+            coeffs: ntt::poly_mul_u32_crt(&self.coeffs, &other.coeffs, crt),
         }
     }
 

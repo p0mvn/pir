@@ -5,13 +5,14 @@
 
 use rand::Rng;
 
-use pir::double::DoublePirClient;
-use pir::lwe_to_rlwe::{decode_packed_result, decrypt_raw, gen_packing_key};
-use pir::params::LweParams;
-use pir::pir_trait::PirClient as PirClientTrait;
-use pir::ring::RingElement;
+use crate::double::DoublePirClient;
+use crate::lwe_to_rlwe::{decode_packed_result, decrypt_raw_with_crt, gen_efficient_packing_key};
+use crate::ntt::CrtParams;
+use crate::params::LweParams;
+use crate::pir_trait::PirClient as PirClientTrait;
+use crate::ring::RingElement;
 
-use crate::{Ypir, YpirAnswer, YpirParams, YpirQuery, YpirQueryState, YpirSetup};
+use super::{Ypir, YpirAnswer, YpirParams, YpirQuery, YpirQueryState, YpirSetup};
 
 /// YPIR client: DoublePIR client with LWE-to-RLWE packing support.
 ///
@@ -41,6 +42,8 @@ pub struct YpirClient {
     params: YpirParams,
     /// Ring dimension for RLWE packing
     ring_dim: usize,
+    /// Number of rows in the database grid
+    num_rows: usize,
 }
 
 impl YpirClient {
@@ -54,6 +57,7 @@ impl YpirClient {
     ///
     /// Panics if setup data is inconsistent with parameters.
     pub fn new(setup: YpirSetup, params: YpirParams) -> Self {
+        let num_rows = setup.double_setup.num_rows;
         let inner = DoublePirClient::new(setup.double_setup, params.lwe);
         let ring_dim = setup.ring_dim;
 
@@ -61,6 +65,7 @@ impl YpirClient {
             inner,
             params,
             ring_dim,
+            num_rows,
         }
     }
 
@@ -97,8 +102,9 @@ impl YpirClient {
         // Generate RLWE secret key (random polynomial)
         let rlwe_secret = RingElement::random(d, rng);
 
-        // Generate packing key: allows server to convert LWE → RLWE
-        let packing_key = gen_packing_key(
+        // Generate efficient packing key: allows server to convert LWE → RLWE
+        // Uses single key-switch key instead of d keys (~1000× smaller!)
+        let packing_key = gen_efficient_packing_key(
             lwe_secret,
             &rlwe_secret,
             self.params.packing.noise_stddev,
@@ -120,15 +126,18 @@ impl YpirClient {
 
     /// Recover the requested record from a YPIR answer.
     ///
-    /// The answer contains packed RLWE ciphertexts. Each ciphertext encrypts
-    /// up to `d` plaintext coefficients (database bytes).
+    /// The answer contains packed RLWE ciphertexts encoding the first-pass
+    /// SimplePIR intermediate result (all rows × all bytes). The client:
+    /// 1. Decrypts all packed RLWE ciphertexts
+    /// 2. Decodes to get intermediate[row, byte] values
+    /// 3. Selects the target row to get the final record
     ///
     /// # Decryption Process
     ///
     /// For each RLWE ciphertext:
     /// 1. Compute raw decryption: `c - a·s` (noisy plaintext polynomial)
     /// 2. Decode each coefficient: `round(coeff/Δ) mod p`
-    /// 3. Concatenate to form the recovered record
+    /// 3. Extract target row's values to form the recovered record
     ///
     /// # Arguments
     /// * `state` - Secret state from query generation
@@ -140,29 +149,49 @@ impl YpirClient {
     pub fn recover(&self, state: &YpirQueryState, answer: &YpirAnswer) -> Vec<u8> {
         let p = self.params.packing.plaintext_modulus;
         let delta = self.params.packing.delta();
+        let record_size = self.inner.record_size();
+        let num_rows = self.num_rows;
+        let target_row = state.double_state.row_idx;
 
-        let mut result = Vec::new();
+        // Decrypt all packed RLWE ciphertexts to get intermediate values
+        // Layout: intermediate[row * record_size + byte] = value for (row, byte)
+        let mut all_intermediate: Vec<u8> = Vec::new();
 
-        // Decrypt each packed RLWE ciphertext
+        // Precompute CRT parameters once (expensive NTT table setup)
+        let crt = CrtParams::new(self.ring_dim);
+
         for ct in &answer.packed_cts {
             // Raw decryption: c - a·s ≈ Δ·m + noise
-            let noisy = decrypt_raw(&state.rlwe_secret, ct);
+            let noisy = decrypt_raw_with_crt(&state.rlwe_secret, ct, &crt);
 
             // Decode: round(coeff/Δ) mod p
             let decoded = decode_packed_result(&noisy, delta, p);
 
             // Each decoded value is a plaintext coefficient (0-255 for p=256)
-            // These are the database bytes
             for &coeff in &decoded {
-                result.push(coeff as u8);
+                all_intermediate.push(coeff as u8);
             }
         }
 
-        // Trim to actual record size (last ciphertext may have padding)
-        let record_size = self.inner.record_size();
-        result.truncate(record_size);
+        // The intermediate has layout: intermediate[row * record_size + byte]
+        // Total expected: num_rows * record_size values
+        let total_values = num_rows * record_size;
 
-        result
+        // Truncate to actual size (remove padding from last ciphertext)
+        if all_intermediate.len() > total_values {
+            all_intermediate.truncate(total_values);
+        }
+
+        // Extract the target row
+        let start = target_row * record_size;
+        let end = start + record_size;
+
+        if end <= all_intermediate.len() {
+            all_intermediate[start..end].to_vec()
+        } else {
+            // Shouldn't happen with correct protocol, but handle gracefully
+            vec![0u8; record_size]
+        }
     }
 
     /// Number of records in the database.
@@ -226,12 +255,12 @@ impl PirClientTrait for YpirClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pir::lwe_to_rlwe::pack_with_key_switching;
-    use pir::regev::{self, CiphertextOwned, SecretKey};
+    use crate::lwe_to_rlwe::{decode_packed_result, decrypt_raw, pack_with_efficient_key};
+    use crate::regev::{self, CiphertextOwned, SecretKey};
 
     /// Test that packing key generation works correctly
     #[test]
-    fn test_packing_key_generation() {
+    fn test_efficient_packing_key_generation() {
         let d = 4;
         let noise_stddev = 2.0;
         let mut rng = rand::rng();
@@ -240,12 +269,13 @@ mod tests {
         let lwe_secret: Vec<u32> = (0..d).map(|_| rng.random()).collect();
         let rlwe_secret = RingElement::random(d, &mut rng);
 
-        // Generate packing key
-        let packing_key = gen_packing_key(&lwe_secret, &rlwe_secret, noise_stddev, &mut rng);
+        // Generate efficient packing key (single key-switch key)
+        let packing_key = gen_efficient_packing_key(&lwe_secret, &rlwe_secret, noise_stddev, &mut rng);
 
-        // Verify structure
-        assert_eq!(packing_key.keys.len(), d);
+        // Verify structure: single key-switch key with d × NUM_DIGITS ciphertexts
+        assert_eq!(packing_key.ks.ks.len(), d); // d components (one per LWE secret element)
         assert_eq!(packing_key.d, d);
+        assert_eq!(packing_key.n, d);
     }
 
     /// Test full pack-decrypt cycle with mock LWE ciphertexts
@@ -278,12 +308,12 @@ mod tests {
             })
             .collect();
 
-        // Generate packing key
-        let packing_key = gen_packing_key(&lwe_secret, &rlwe_secret, noise_stddev, &mut rng);
+        // Generate efficient packing key
+        let packing_key = gen_efficient_packing_key(&lwe_secret, &rlwe_secret, noise_stddev, &mut rng);
 
-        // Pack into RLWE
+        // Pack into RLWE using efficient packing
         let lwe_refs: Vec<_> = lwe_cts.iter().map(|ct| ct.as_ref()).collect();
-        let packed = pack_with_key_switching(&lwe_refs, &packing_key);
+        let packed = pack_with_efficient_key(&lwe_refs, &packing_key);
 
         // Decrypt RLWE
         let noisy = decrypt_raw(&rlwe_secret, &packed);
@@ -324,9 +354,9 @@ mod tests {
             })
             .collect();
 
-        let packing_key = gen_packing_key(&lwe_secret, &rlwe_secret, noise_stddev, &mut rng);
+        let packing_key = gen_efficient_packing_key(&lwe_secret, &rlwe_secret, noise_stddev, &mut rng);
         let lwe_refs: Vec<_> = lwe_cts.iter().map(|ct| ct.as_ref()).collect();
-        let packed = pack_with_key_switching(&lwe_refs, &packing_key);
+        let packed = pack_with_efficient_key(&lwe_refs, &packing_key);
         let noisy = decrypt_raw(&rlwe_secret, &packed);
         let delta = params.delta();
         let decoded = decode_packed_result(&noisy, delta, p);

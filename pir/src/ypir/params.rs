@@ -17,10 +17,10 @@
 use serde::{Deserialize, Serialize};
 
 // Re-export LweParams from pir for convenience
-pub use pir::params::LweParams;
+pub use crate::params::LweParams;
 
 // Re-export the gadget decomposition constants from lwe_to_rlwe
-pub use pir::lwe_to_rlwe::{GADGET_BASE, LOG_BASE, NUM_DIGITS};
+pub use crate::lwe_to_rlwe::{GADGET_BASE, LOG_BASE, NUM_DIGITS};
 
 /// Parameters for the LWE-to-RLWE packing transformation.
 ///
@@ -122,7 +122,7 @@ impl PackingParams {
 /// # Usage
 ///
 /// ```ignore
-/// use ypir::params::YpirParams;
+/// use pir::ypir::params::YpirParams;
 ///
 /// // Standard configuration
 /// let params = YpirParams::standard();

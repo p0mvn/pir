@@ -20,7 +20,18 @@ interface LweParams {
   noise_stddev: number;
 }
 
-interface DoublePirSetup {
+interface PackingParams {
+  ring_dimension: number;
+  plaintext_modulus: number;
+  noise_stddev: number;
+}
+
+interface YpirParams {
+  lwe: LweParams;
+  packing: PackingParams;
+}
+
+interface YpirSetup {
   seed_col: number[];
   seed_row: number[];
   hint_col_data: number[];
@@ -35,16 +46,22 @@ interface DoublePirSetup {
   record_size: number;
   num_records: number;
   lwe_dim: number;
+  ring_dim: number;
 }
 
 interface PirSetupResponse {
   filter_params: BinaryFuseParams;
-  lwe_params: LweParams;
-  pir_setup: DoublePirSetup;
+  ypir_params: YpirParams;
+  pir_setup: YpirSetup;
 }
 
-interface DoublePirAnswer {
-  data: number[];
+interface RlweCiphertext {
+  a: number[];
+  c: number[];
+}
+
+interface YpirAnswer {
+  packed_cts: RlweCiphertext[];
 }
 
 interface HealthResponse {
@@ -123,10 +140,10 @@ export default function Home() {
         
         const setupData: PirSetupResponse = await setupResponse.json();
         
-        // Create PIR client
+        // Create PIR client (YPIR)
         const client = new wasmModule.PirClient(
           JSON.stringify(setupData.pir_setup),
-          JSON.stringify(setupData.lwe_params),
+          JSON.stringify(setupData.ypir_params),
           JSON.stringify(setupData.filter_params)
         );
         pirClientRef.current = client;
@@ -189,7 +206,7 @@ export default function Home() {
           throw new Error('Server error during lookup');
         }
         
-        const { answer }: { answer: DoublePirAnswer } = await response.json();
+        const { answer }: { answer: YpirAnswer } = await response.json();
         
         // Recover record using WASM
         const recovered = client.recover(JSON.stringify(queryState), JSON.stringify(answer));
@@ -536,12 +553,13 @@ export default function Home() {
           {/* Technical details */}
           {showTechnicalDetails && (
             <div className="mt-6 bg-slate-900/60 backdrop-blur-sm rounded-2xl p-6 border border-slate-700/50">
-              <h3 className="font-semibold text-white mb-4">DoublePIR with Binary Fuse Filters</h3>
+              <h3 className="font-semibold text-white mb-4">YPIR with Binary Fuse Filters</h3>
               <div className="space-y-4 text-sm text-slate-400">
                 <p>
-                  This implementation uses <span className="text-violet-300">DoublePIR</span>, a Private Information Retrieval protocol 
-                  based on Learning With Errors (LWE) encryption. The database is encoded using a 
-                  <span className="text-violet-300"> Binary Fuse Filter</span>, enabling keyword-based lookups with just 3 PIR queries.
+                  This implementation uses <span className="text-violet-300">YPIR</span> (DoublePIR + LWE-to-RLWE packing), 
+                  a Private Information Retrieval protocol based on Learning With Errors (LWE) encryption with ~1000× response compression.
+                  The database is encoded using a <span className="text-violet-300">Binary Fuse Filter</span>, 
+                  enabling keyword-based lookups with just 3 PIR queries.
                 </p>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-2">
                   {health && (
@@ -558,7 +576,7 @@ export default function Home() {
                   )}
                   <div className="bg-slate-800/50 rounded-xl p-3">
                     <div className="text-xs text-slate-500 mb-1">Protocol</div>
-                    <div className="text-white font-mono">DoublePIR</div>
+                    <div className="text-white font-mono">YPIR</div>
                   </div>
                   <div className="bg-slate-800/50 rounded-xl p-3">
                     <div className="text-xs text-slate-500 mb-1">Queries</div>
@@ -575,7 +593,7 @@ export default function Home() {
                   >
                     SimplePIR/DoublePIR paper
                   </a>
-                  {' '}by Henzinger et al.
+                  {' '}by Henzinger et al. with YPIR response compression.
                 </p>
               </div>
             </div>
