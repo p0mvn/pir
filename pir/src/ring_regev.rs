@@ -24,6 +24,7 @@ impl RlweParams {
     }
 }
 
+#[derive(Clone)]
 pub struct RLWECiphertextOwned {
     pub a: RingElement,
     pub c: RingElement,

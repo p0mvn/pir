@@ -35,7 +35,7 @@ pub use params::{LweParams, PackingParams, YpirParams};
 pub use server::YpirServer;
 
 use crate::double::{DoublePirQuery, DoublePirQueryState, DoublePirSetup};
-use crate::lwe_to_rlwe::PackingKey;
+use crate::lwe_to_rlwe::{EfficientPackingKey, NUM_DIGITS};
 use crate::pir_trait::{CommunicationCost, PirProtocol};
 use crate::ring::RingElement;
 use crate::ring_regev::RLWECiphertextOwned;
@@ -64,15 +64,15 @@ impl PirProtocol for Ypir {
 /// # Communication Cost
 ///
 /// - DoublePIR query: `2 × √N × (n + 1) × 4` bytes
-/// - Packing key: `d × d × NUM_DIGITS × 2d × 4` bytes
+/// - Efficient packing key: `n × NUM_DIGITS × 2d × 4` bytes (~1000× smaller than naive!)
 ///
-/// The packing key is the dominant cost, but it enables massive
-/// response compression (typically 1000×).
+/// With efficient packing, the query size is practical (~33 MB for d=n=1024)
+/// while still enabling ~1000× response compression.
 pub struct YpirQuery {
     /// The underlying DoublePIR query (encrypted unit vectors)
     pub double_query: DoublePirQuery,
-    /// Packing key for LWE-to-RLWE conversion (allows server to compress response)
-    pub packing_key: PackingKey,
+    /// Efficient packing key for LWE-to-RLWE conversion (single key-switch key)
+    pub packing_key: EfficientPackingKey,
 }
 
 /// YPIR answer: packed RLWE ciphertexts.
@@ -125,12 +125,14 @@ impl CommunicationCost for YpirQuery {
         // DoublePIR query size
         let double_query_size = self.double_query.size_bytes();
 
-        // Packing key size: d keys × d positions × NUM_DIGITS × 2d coefficients × 4 bytes
-        // Each KeySwitchKey has d × NUM_DIGITS RLWE ciphertexts
-        // Each RLWE ciphertext has 2d coefficients (a and c polynomials)
+        // Efficient packing key size: n × NUM_DIGITS × 2d coefficients × 4 bytes
+        // (vs naive: d × n × NUM_DIGITS × 2d which is d times larger!)
+        //
+        // The efficient key has ONE key-switch key with n × NUM_DIGITS RLWE ciphertexts.
+        // Each RLWE ciphertext has 2d coefficients.
+        let n = self.packing_key.n;
         let d = self.packing_key.d;
-        let num_digits = crate::lwe_to_rlwe::NUM_DIGITS;
-        let packing_key_size = d * d * num_digits * 2 * d * std::mem::size_of::<u32>();
+        let packing_key_size = n * NUM_DIGITS * 2 * d * std::mem::size_of::<u32>();
 
         double_query_size + packing_key_size
     }

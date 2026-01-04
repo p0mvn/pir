@@ -5,7 +5,11 @@ use pir::ypir::{PackingParams, YpirClient, YpirParams, YpirServer};
 
 const RECORD_SIZE: usize = 3;
 
-/// Standard parameters for preprocessing benchmarks (128-bit security).
+/// Standard parameters for benchmarks (128-bit security).
+///
+/// With efficient packing (single key-switch key), the packing key generation
+/// is now O(n × NUM_DIGITS) RLWE encryptions instead of O(d × n × NUM_DIGITS).
+/// This is ~1000× faster for d=n=1024, making standard parameters practical.
 fn standard_params() -> YpirParams {
     let lwe = LweParams {
         n: 1024,
@@ -20,10 +24,7 @@ fn standard_params() -> YpirParams {
     YpirParams { lwe, packing }
 }
 
-/// Smaller parameters for end-to-end benchmarks.
-///
-/// Packing key generation is O(d² × NUM_DIGITS) RLWE encryptions,
-/// so smaller dimensions are needed for reasonable benchmark times.
+/// Smaller parameters for quick testing.
 fn fast_params() -> YpirParams {
     let lwe = LweParams {
         n: 256,
@@ -72,11 +73,12 @@ fn bench_server_preprocessing(c: &mut Criterion) {
 fn bench_end_to_end(c: &mut Criterion) {
     let mut group = c.benchmark_group("ypir_end_to_end");
 
-    // Use smaller parameters for end-to-end because packing key generation
-    // is expensive: O(d² × NUM_DIGITS) RLWE encryptions
-    for num_records in [100, 1_000, 10_000] {
+    // With efficient packing (O(n × NUM_DIGITS) instead of O(d × n × NUM_DIGITS)),
+    // we can now use standard security parameters for end-to-end benchmarks.
+    // Use fast_params for quick iteration, standard_params for production benchmarks.
+    for num_records in [1_000, 10_000, 100_000] {
         let db = create_database(num_records);
-        let params = fast_params();
+        let params = fast_params(); // Change to standard_params() for production benchmarks
         let mut rng = rand::rng();
 
         let server = YpirServer::new(db, &params, &mut rng);
@@ -90,10 +92,10 @@ fn bench_end_to_end(c: &mut Criterion) {
                 b.iter(|| {
                     let mut rng = rand::rng();
 
-                    // Client query (includes packing key generation)
+                    // Client query (includes efficient packing key generation)
                     let (state, query) = client.query(0, &mut rng);
 
-                    // Server answer (includes LWE-to-RLWE packing)
+                    // Server answer (includes efficient LWE-to-RLWE packing)
                     let answer = server.answer(&query);
 
                     // Client recover (RLWE decryption + row selection)

@@ -6,7 +6,7 @@
 use rand::Rng;
 
 use crate::double::DoublePirClient;
-use crate::lwe_to_rlwe::{decode_packed_result, decrypt_raw_with_crt, gen_packing_key};
+use crate::lwe_to_rlwe::{decode_packed_result, decrypt_raw_with_crt, gen_efficient_packing_key};
 use crate::ntt::CrtParams;
 use crate::params::LweParams;
 use crate::pir_trait::PirClient as PirClientTrait;
@@ -102,8 +102,9 @@ impl YpirClient {
         // Generate RLWE secret key (random polynomial)
         let rlwe_secret = RingElement::random(d, rng);
 
-        // Generate packing key: allows server to convert LWE → RLWE
-        let packing_key = gen_packing_key(
+        // Generate efficient packing key: allows server to convert LWE → RLWE
+        // Uses single key-switch key instead of d keys (~1000× smaller!)
+        let packing_key = gen_efficient_packing_key(
             lwe_secret,
             &rlwe_secret,
             self.params.packing.noise_stddev,
@@ -254,12 +255,12 @@ impl PirClientTrait for YpirClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lwe_to_rlwe::{decode_packed_result, decrypt_raw, pack_with_key_switching};
+    use crate::lwe_to_rlwe::{decode_packed_result, decrypt_raw, pack_with_efficient_key};
     use crate::regev::{self, CiphertextOwned, SecretKey};
 
     /// Test that packing key generation works correctly
     #[test]
-    fn test_packing_key_generation() {
+    fn test_efficient_packing_key_generation() {
         let d = 4;
         let noise_stddev = 2.0;
         let mut rng = rand::rng();
@@ -268,12 +269,13 @@ mod tests {
         let lwe_secret: Vec<u32> = (0..d).map(|_| rng.random()).collect();
         let rlwe_secret = RingElement::random(d, &mut rng);
 
-        // Generate packing key
-        let packing_key = gen_packing_key(&lwe_secret, &rlwe_secret, noise_stddev, &mut rng);
+        // Generate efficient packing key (single key-switch key)
+        let packing_key = gen_efficient_packing_key(&lwe_secret, &rlwe_secret, noise_stddev, &mut rng);
 
-        // Verify structure
-        assert_eq!(packing_key.keys.len(), d);
+        // Verify structure: single key-switch key with d × NUM_DIGITS ciphertexts
+        assert_eq!(packing_key.ks.ks.len(), d); // d components (one per LWE secret element)
         assert_eq!(packing_key.d, d);
+        assert_eq!(packing_key.n, d);
     }
 
     /// Test full pack-decrypt cycle with mock LWE ciphertexts
@@ -306,12 +308,12 @@ mod tests {
             })
             .collect();
 
-        // Generate packing key
-        let packing_key = gen_packing_key(&lwe_secret, &rlwe_secret, noise_stddev, &mut rng);
+        // Generate efficient packing key
+        let packing_key = gen_efficient_packing_key(&lwe_secret, &rlwe_secret, noise_stddev, &mut rng);
 
-        // Pack into RLWE
+        // Pack into RLWE using efficient packing
         let lwe_refs: Vec<_> = lwe_cts.iter().map(|ct| ct.as_ref()).collect();
-        let packed = pack_with_key_switching(&lwe_refs, &packing_key);
+        let packed = pack_with_efficient_key(&lwe_refs, &packing_key);
 
         // Decrypt RLWE
         let noisy = decrypt_raw(&rlwe_secret, &packed);
@@ -352,9 +354,9 @@ mod tests {
             })
             .collect();
 
-        let packing_key = gen_packing_key(&lwe_secret, &rlwe_secret, noise_stddev, &mut rng);
+        let packing_key = gen_efficient_packing_key(&lwe_secret, &rlwe_secret, noise_stddev, &mut rng);
         let lwe_refs: Vec<_> = lwe_cts.iter().map(|ct| ct.as_ref()).collect();
-        let packed = pack_with_key_switching(&lwe_refs, &packing_key);
+        let packed = pack_with_efficient_key(&lwe_refs, &packing_key);
         let noisy = decrypt_raw(&rlwe_secret, &packed);
         let delta = params.delta();
         let decoded = decode_packed_result(&noisy, delta, p);

@@ -16,7 +16,7 @@
 use rand::Rng;
 
 use crate::double::DoublePirServer;
-use crate::lwe_to_rlwe::pack_with_key_switching;
+use crate::lwe_to_rlwe::pack_with_efficient_key;
 use crate::matrix_database::DoublePirDatabase;
 use crate::pir::{LweMatrix, MatrixSeed};
 use crate::pir_trait::PirServer as PirServerTrait;
@@ -182,8 +182,8 @@ impl YpirServer {
                 }
             }
 
-            // Pack into RLWE
-            let packed = pack_with_key_switching(&lwe_cts, &query.packing_key);
+            // Pack into RLWE using efficient single-position packing
+            let packed = pack_with_efficient_key(&lwe_cts, &query.packing_key);
             packed_cts.push(packed);
         }
 

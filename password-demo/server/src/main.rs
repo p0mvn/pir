@@ -40,7 +40,7 @@ use axum::{
 };
 use hibp::{CompactChecker, CompactDownloader, DownloadSize, PasswordChecker};
 use pir::binary_fuse::{BinaryFuseFilter, BinaryFuseParams};
-use pir::lwe_to_rlwe::{KeySwitchKey, PackingKey};
+use pir::lwe_to_rlwe::{EfficientPackingKey, KeySwitchKey};
 use pir::matrix_database::DoublePirDatabase;
 use pir::ring_regev::RLWECiphertextOwned;
 use pir::ypir::{YpirAnswer, YpirParams, YpirQuery, YpirServer, YpirSetup};
@@ -297,30 +297,34 @@ impl From<JsKeySwitchKey> for KeySwitchKey {
     }
 }
 
-/// Packing key for YPIR (d key-switch keys, one per position)
+/// Efficient packing key for YPIR (single key-switch key, not d keys)
+/// This is ~1000× smaller than the naive approach
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct JsPackingKey {
-    keys: Vec<JsKeySwitchKey>,
+struct JsEfficientPackingKey {
+    /// Single key-switch key for position 0
+    ks: JsKeySwitchKey,
+    /// RLWE ring dimension
     d: usize,
+    /// LWE dimension
     n: usize,
 }
 
-impl From<JsPackingKey> for PackingKey {
-    fn from(k: JsPackingKey) -> Self {
+impl From<JsEfficientPackingKey> for EfficientPackingKey {
+    fn from(k: JsEfficientPackingKey) -> Self {
         Self {
-            keys: k.keys.into_iter().map(|k| k.into()).collect(),
+            ks: k.ks.into(),
             d: k.d,
             n: k.n,
         }
     }
 }
 
-/// YPIR query (DoublePIR query + packing key)
+/// YPIR query (DoublePIR query + efficient packing key)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct JsYpirQuery {
     query_col: Vec<u32>,
     query_row: Vec<u32>,
-    packing_key: JsPackingKey,
+    packing_key: JsEfficientPackingKey,
 }
 
 impl From<JsYpirQuery> for YpirQuery {
