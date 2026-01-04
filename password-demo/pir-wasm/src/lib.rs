@@ -12,11 +12,13 @@ use pir::params::LweParams;
 use pir::pir::ClientHint;
 use pir::ring::RingElement;
 use pir::ring_regev::RLWECiphertextOwned;
+use pir::ypir::{
+    PackingParams, YpirAnswer, YpirClient, YpirParams, YpirQuery, YpirQueryState, YpirSetup,
+};
 use rand::SeedableRng;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use wasm_bindgen::prelude::*;
-use pir::ypir::{PackingParams, YpirAnswer, YpirClient, YpirParams, YpirQuery, YpirQueryState, YpirSetup};
 
 // Initialize panic hook for better error messages in WASM
 #[wasm_bindgen(start)]
@@ -430,7 +432,7 @@ impl PirClient {
             .into(),
         );
 
-        let inner = YpirClient::new(pir_setup, params.clone());
+        let inner = YpirClient::new(pir_setup, params);
 
         // Create RNG from random seed
         let mut seed = [0u8; 32];
@@ -662,6 +664,9 @@ mod tests {
         let decoded: JsYpirParams = serde_json::from_str(&json).unwrap();
 
         assert_eq!(params.lwe.n, decoded.lwe.n);
-        assert_eq!(params.packing.ring_dimension, decoded.packing.ring_dimension);
+        assert_eq!(
+            params.packing.ring_dimension,
+            decoded.packing.ring_dimension
+        );
     }
 }

@@ -242,8 +242,8 @@ impl PirServerTrait for YpirServer {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::{LweParams, PackingParams, YpirClient, YpirParams};
+    use super::*;
     use crate::matrix_database::DoublePirDatabase;
     use crate::pir_trait::CommunicationCost;
 
