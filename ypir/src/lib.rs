@@ -184,6 +184,7 @@ impl YpirAnswer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pir::ring::RingElement;
 
     #[test]
     fn test_ypir_protocol_types() {
@@ -194,8 +195,6 @@ mod tests {
 
     #[test]
     fn test_communication_cost_answer() {
-        use pir::ring::RingElement;
-
         // Create a mock RLWE ciphertext with d=4
         let d = 4;
         let ct = RLWECiphertextOwned {
@@ -213,5 +212,88 @@ mod tests {
 
         // Size should be 2d × 4 bytes = 32 bytes
         assert_eq!(answer.size_bytes(), 2 * d * std::mem::size_of::<u32>());
+    }
+
+    #[test]
+    fn test_communication_cost_answer_multiple_cts() {
+        let d = 8;
+
+        // Multiple ciphertexts
+        let cts: Vec<RLWECiphertextOwned> = (0..3)
+            .map(|_| RLWECiphertextOwned {
+                a: RingElement {
+                    coeffs: vec![0u32; d],
+                },
+                c: RingElement {
+                    coeffs: vec![0u32; d],
+                },
+            })
+            .collect();
+
+        let answer = YpirAnswer { packed_cts: cts };
+
+        // 3 ciphertexts × 2d × 4 bytes = 3 × 16 × 4 = 192 bytes
+        assert_eq!(answer.size_bytes(), 3 * 2 * d * std::mem::size_of::<u32>());
+    }
+
+    #[test]
+    fn test_communication_cost_empty_answer() {
+        let answer = YpirAnswer {
+            packed_cts: vec![],
+        };
+        assert_eq!(answer.size_bytes(), 0);
+    }
+
+    #[test]
+    fn test_ypir_answer_num_ciphertexts() {
+        let d = 4;
+
+        // Zero ciphertexts
+        let answer_empty = YpirAnswer {
+            packed_cts: vec![],
+        };
+        assert_eq!(answer_empty.num_ciphertexts(), 0);
+
+        // One ciphertext
+        let ct = RLWECiphertextOwned {
+            a: RingElement {
+                coeffs: vec![0u32; d],
+            },
+            c: RingElement {
+                coeffs: vec![0u32; d],
+            },
+        };
+        let answer_one = YpirAnswer {
+            packed_cts: vec![ct],
+        };
+        assert_eq!(answer_one.num_ciphertexts(), 1);
+
+        // Multiple ciphertexts
+        let cts: Vec<RLWECiphertextOwned> = (0..5)
+            .map(|_| RLWECiphertextOwned {
+                a: RingElement {
+                    coeffs: vec![0u32; d],
+                },
+                c: RingElement {
+                    coeffs: vec![0u32; d],
+                },
+            })
+            .collect();
+        let answer_many = YpirAnswer { packed_cts: cts };
+        assert_eq!(answer_many.num_ciphertexts(), 5);
+    }
+
+    #[test]
+    fn test_ypir_protocol_associated_types() {
+        // Verify associated types compile and are correct
+        fn check_types<P: PirProtocol>()
+        where
+            P::Query: Sized,
+            P::Answer: Sized,
+            P::QueryState: Sized,
+            P::SetupData: Sized,
+        {
+        }
+        check_types::<Ypir>();
     }
 }
