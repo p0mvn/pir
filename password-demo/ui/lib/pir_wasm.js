@@ -187,6 +187,14 @@ export class PirClient {
         }
     }
     /**
+     * Get the LWE dimension
+     * @returns {number}
+     */
+    lwe_dimension() {
+        const ret = wasm.pirclient_lwe_dimension(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
      * XOR three records to decode the final value
      * @param {Uint8Array} rec0
      * @param {Uint8Array} rec1
@@ -206,24 +214,12 @@ export class PirClient {
         return v4;
     }
     /**
-     * Debug: Get the first few elements of A_col matrix
-     * @returns {Uint32Array}
+     * Get the ring dimension used for RLWE packing
+     * @returns {number}
      */
-    get_a_col_data() {
-        const ret = wasm.pirclient_get_a_col_data(this.__wbg_ptr);
-        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
-    }
-    /**
-     * Debug: Get the first few elements of A_row matrix
-     * @returns {Uint32Array}
-     */
-    get_a_row_data() {
-        const ret = wasm.pirclient_get_a_row_data(this.__wbg_ptr);
-        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
+    ring_dimension() {
+        const ret = wasm.pirclient_ring_dimension(this.__wbg_ptr);
+        return ret >>> 0;
     }
     /**
      * Get the 3 record indices for a keyword (hash) query
@@ -254,13 +250,13 @@ export class PirClient {
     /**
      * Create a new PIR client from setup data (JSON)
      * @param {string} setup_json
-     * @param {string} lwe_params_json
+     * @param {string} ypir_params_json
      * @param {string} filter_params_json
      */
-    constructor(setup_json, lwe_params_json, filter_params_json) {
+    constructor(setup_json, ypir_params_json, filter_params_json) {
         const ptr0 = passStringToWasm0(setup_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(lwe_params_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr1 = passStringToWasm0(ypir_params_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
         const ptr2 = passStringToWasm0(filter_params_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len2 = WASM_VECTOR_LEN;
@@ -274,7 +270,7 @@ export class PirClient {
     }
     /**
      * Generate a PIR query for a specific record index
-     * Returns JSON: { state: JsQueryState, query: JsDoublePirQuery }
+     * Returns JSON: { state: JsQueryState, query: JsYpirQuery }
      * @param {number} record_idx
      * @returns {string}
      */
@@ -298,7 +294,7 @@ export class PirClient {
     }
     /**
      * Recover a record from the server's answer
-     * Takes: state_json (JsQueryState), answer_json (JsDoublePirAnswer)
+     * Takes: state_json (JsQueryState), answer_json (JsYpirAnswer)
      * Returns: the recovered bytes as a Uint8Array
      * @param {string} state_json
      * @param {string} answer_json
@@ -470,7 +466,7 @@ async function __wbg_init(module_or_path) {
     }
 
     if (typeof module_or_path === 'undefined') {
-        throw new Error('pir_wasm.js: module_or_path must be specified');
+        module_or_path = '/wasm/pir_wasm_bg.wasm';
     }
     const imports = __wbg_get_imports();
 

@@ -1,7 +1,9 @@
-//! HIBP Password Checker HTTP Server with DoublePIR Support
+//! HIBP Password Checker HTTP Server with YPIR Support
 //!
 //! A simple HTTP server that checks if password hashes exist in the HIBP database.
-//! Also provides DoublePIR-based private information retrieval for demo purposes.
+//! Also provides YPIR-based private information retrieval for demo purposes.
+//!
+//! YPIR = DoublePIR + LWE-to-RLWE packing for ~1000× response compression.
 //!
 //! ## Endpoints
 //!
@@ -9,9 +11,9 @@
 //! - `GET /health` - Health check
 //! - `POST /check` - Check if a SHA-1 hash is pwned
 //!
-//! ### DoublePIR Demo
+//! ### YPIR Demo
 //! - `GET /pir/setup` - Get PIR setup data (filter params, LWE params, hints)
-//! - `POST /pir/query` - Answer a PIR query
+//! - `POST /pir/query` - Answer a PIR query (returns packed RLWE ciphertexts)
 //!
 //! ## Usage
 //!
@@ -31,21 +33,22 @@
 //! ```
 
 use axum::{
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::StatusCode,
     routing::{get, post},
     Json, Router,
 };
 use hibp::{CompactChecker, CompactDownloader, DownloadSize, PasswordChecker};
 use pir::binary_fuse::{BinaryFuseFilter, BinaryFuseParams};
-use pir::double::{DoublePirAnswer, DoublePirQuery, DoublePirServer, DoublePirSetup};
+use pir::lwe_to_rlwe::{KeySwitchKey, PackingKey};
 use pir::matrix_database::DoublePirDatabase;
-use pir::params::LweParams;
+use pir::ring_regev::RLWECiphertextOwned;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Instant;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{error, info, warn};
+use pir::ypir::{YpirAnswer, YpirParams, YpirQuery, YpirServer, YpirSetup};
 
 // ============================================================================
 // Memory Observability
@@ -99,12 +102,12 @@ impl Checker {
 struct AppState {
     /// Checker for direct hash lookups (None when PIR-only mode is active)
     checker: Option<Checker>,
-    /// DoublePIR server (initialized lazily or on startup)
-    pir_server: Option<DoublePirServer>,
+    /// YPIR server (initialized lazily or on startup)
+    pir_server: Option<YpirServer>,
     /// Binary Fuse Filter parameters for client
     filter_params: Option<BinaryFuseParams>,
-    /// LWE parameters
-    lwe_params: Option<LweParams>,
+    /// YPIR parameters (LWE + packing)
+    ypir_params: Option<YpirParams>,
     /// Stats captured before dropping checker (for health endpoint)
     cached_stats: Option<hibp::CheckerStats>,
 }
@@ -140,7 +143,7 @@ struct HealthResponse {
 }
 
 // ============================================================================
-// DoublePIR Types (JSON-serializable for HTTP transport)
+// YPIR Types (JSON-serializable for HTTP transport)
 // ============================================================================
 
 /// Binary Fuse Filter parameters (seed as string to avoid JS precision loss)
@@ -173,19 +176,42 @@ struct JsLweParams {
     noise_stddev: f64,
 }
 
-impl From<LweParams> for JsLweParams {
-    fn from(p: LweParams) -> Self {
+/// Packing parameters for RLWE
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct JsPackingParams {
+    ring_dimension: usize,
+    plaintext_modulus: u32,
+    noise_stddev: f64,
+}
+
+/// Combined YPIR parameters
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct JsYpirParams {
+    lwe: JsLweParams,
+    packing: JsPackingParams,
+}
+
+impl From<YpirParams> for JsYpirParams {
+    fn from(p: YpirParams) -> Self {
         Self {
-            n: p.n,
-            p: p.p,
-            noise_stddev: p.noise_stddev,
+            lwe: JsLweParams {
+                n: p.lwe.n,
+                p: p.lwe.p,
+                noise_stddev: p.lwe.noise_stddev,
+            },
+            packing: JsPackingParams {
+                ring_dimension: p.packing.ring_dimension,
+                plaintext_modulus: p.packing.plaintext_modulus,
+                noise_stddev: p.packing.noise_stddev,
+            },
         }
     }
 }
 
-/// DoublePIR setup data
+/// YPIR setup data (DoublePIR setup + ring dimension)
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct JsDoublePirSetup {
+struct JsYpirSetup {
+    // DoublePIR setup fields
     seed_col: Vec<u8>,
     seed_row: Vec<u8>,
     hint_col_data: Vec<u32>,
@@ -200,54 +226,126 @@ struct JsDoublePirSetup {
     record_size: usize,
     num_records: usize,
     lwe_dim: usize,
+    // YPIR-specific field
+    ring_dim: usize,
 }
 
-impl From<DoublePirSetup> for JsDoublePirSetup {
-    fn from(s: DoublePirSetup) -> Self {
+impl From<YpirSetup> for JsYpirSetup {
+    fn from(s: YpirSetup) -> Self {
         Self {
-            seed_col: s.seed_col.to_vec(),
-            seed_row: s.seed_row.to_vec(),
-            hint_col_data: s.hint_col.data,
-            hint_col_rows: s.hint_col.rows,
-            hint_col_cols: s.hint_col.cols,
-            hint_row_data: s.hint_row.data,
-            hint_row_rows: s.hint_row.rows,
-            hint_row_cols: s.hint_row.cols,
-            hint_cross: s.hint_cross,
-            num_cols: s.num_cols,
-            num_rows: s.num_rows,
-            record_size: s.record_size,
-            num_records: s.num_records,
-            lwe_dim: s.lwe_dim,
+            seed_col: s.double_setup.seed_col.to_vec(),
+            seed_row: s.double_setup.seed_row.to_vec(),
+            hint_col_data: s.double_setup.hint_col.data,
+            hint_col_rows: s.double_setup.hint_col.rows,
+            hint_col_cols: s.double_setup.hint_col.cols,
+            hint_row_data: s.double_setup.hint_row.data,
+            hint_row_rows: s.double_setup.hint_row.rows,
+            hint_row_cols: s.double_setup.hint_row.cols,
+            hint_cross: s.double_setup.hint_cross,
+            num_cols: s.double_setup.num_cols,
+            num_rows: s.double_setup.num_rows,
+            record_size: s.double_setup.record_size,
+            num_records: s.double_setup.num_records,
+            lwe_dim: s.double_setup.lwe_dim,
+            ring_dim: s.ring_dim,
         }
     }
 }
 
-/// DoublePIR query (from client)
+/// RLWE ciphertext for JSON serialization
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct JsDoublePirQuery {
+struct JsRlweCiphertext {
+    a: Vec<u32>,
+    c: Vec<u32>,
+}
+
+impl From<RLWECiphertextOwned> for JsRlweCiphertext {
+    fn from(ct: RLWECiphertextOwned) -> Self {
+        Self {
+            a: ct.a.coeffs,
+            c: ct.c.coeffs,
+        }
+    }
+}
+
+/// Key switch key for a single position
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct JsKeySwitchKey {
+    /// ks[i][k] = RLWE encryption of s_i · B^k · x^j
+    ks: Vec<Vec<JsRlweCiphertext>>,
+    target_position: usize,
+}
+
+impl From<JsKeySwitchKey> for KeySwitchKey {
+    fn from(k: JsKeySwitchKey) -> Self {
+        Self {
+            ks: k
+                .ks
+                .into_iter()
+                .map(|inner| {
+                    inner
+                        .into_iter()
+                        .map(|ct| RLWECiphertextOwned {
+                            a: pir::ring::RingElement { coeffs: ct.a },
+                            c: pir::ring::RingElement { coeffs: ct.c },
+                        })
+                        .collect()
+                })
+                .collect(),
+            target_position: k.target_position,
+        }
+    }
+}
+
+/// Packing key for YPIR (d key-switch keys, one per position)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct JsPackingKey {
+    keys: Vec<JsKeySwitchKey>,
+    d: usize,
+    n: usize,
+}
+
+impl From<JsPackingKey> for PackingKey {
+    fn from(k: JsPackingKey) -> Self {
+        Self {
+            keys: k.keys.into_iter().map(|k| k.into()).collect(),
+            d: k.d,
+            n: k.n,
+        }
+    }
+}
+
+/// YPIR query (DoublePIR query + packing key)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct JsYpirQuery {
     query_col: Vec<u32>,
     query_row: Vec<u32>,
+    packing_key: JsPackingKey,
 }
 
-impl From<JsDoublePirQuery> for DoublePirQuery {
-    fn from(q: JsDoublePirQuery) -> Self {
+impl From<JsYpirQuery> for YpirQuery {
+    fn from(q: JsYpirQuery) -> Self {
         Self {
-            query_col: q.query_col,
-            query_row: q.query_row,
+            double_query: pir::double::DoublePirQuery {
+                query_col: q.query_col,
+                query_row: q.query_row,
+            },
+            packing_key: q.packing_key.into(),
         }
     }
 }
 
-/// DoublePIR answer (to client)
+/// YPIR answer (packed RLWE ciphertexts)
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct JsDoublePirAnswer {
-    data: Vec<u32>,
+struct JsYpirAnswer {
+    packed_cts: Vec<JsRlweCiphertext>,
 }
 
-impl From<DoublePirAnswer> for JsDoublePirAnswer {
-    fn from(a: DoublePirAnswer) -> Self {
-        Self { data: a.data }
+impl From<YpirAnswer> for JsYpirAnswer {
+    fn from(a: YpirAnswer) -> Self {
+        Self {
+            packed_cts: a.packed_cts.into_iter().map(|ct| ct.into()).collect(),
+        }
     }
 }
 
@@ -255,20 +353,20 @@ impl From<DoublePirAnswer> for JsDoublePirAnswer {
 #[derive(Debug, Serialize)]
 struct PirSetupResponse {
     filter_params: JsBinaryFuseParams,
-    lwe_params: JsLweParams,
-    pir_setup: JsDoublePirSetup,
+    ypir_params: JsYpirParams,
+    pir_setup: JsYpirSetup,
 }
 
 /// PIR query request
 #[derive(Debug, Deserialize)]
 struct PirQueryRequest {
-    query: JsDoublePirQuery,
+    query: JsYpirQuery,
 }
 
 /// PIR query response
 #[derive(Debug, Serialize)]
 struct PirQueryResponse {
-    answer: JsDoublePirAnswer,
+    answer: JsYpirAnswer,
 }
 
 // ============================================================================
@@ -354,16 +452,16 @@ async fn pir_setup(
         "Filter params not available".to_string(),
     ))?;
 
-    let lwe_params = state.lwe_params.as_ref().ok_or((
+    let ypir_params = state.ypir_params.as_ref().ok_or((
         StatusCode::SERVICE_UNAVAILABLE,
-        "LWE params not available".to_string(),
+        "YPIR params not available".to_string(),
     ))?;
 
     let setup = pir_server.setup();
 
     Ok(Json(PirSetupResponse {
         filter_params: filter_params.clone().into(),
-        lwe_params: (*lwe_params).into(),
+        ypir_params: (*ypir_params).into(),
         pir_setup: setup.into(),
     }))
 }
@@ -378,7 +476,7 @@ async fn pir_query(
         "PIR not initialized".to_string(),
     ))?;
 
-    let query: DoublePirQuery = payload.query.into();
+    let query: YpirQuery = payload.query.into();
     let answer = pir_server.answer(&query);
 
     Ok(Json(PirQueryResponse {
@@ -393,7 +491,7 @@ async fn pir_query(
 /// Create a demo database for PIR using real HIBP data from PasswordChecker
 fn create_pir_demo_database(
     checker: &PasswordChecker,
-) -> (BinaryFuseParams, DoublePirDatabase, LweParams) {
+) -> (BinaryFuseParams, DoublePirDatabase, YpirParams) {
     info!("Creating PIR demo database from PasswordChecker...");
 
     // Get real HIBP data from the loaded cache
@@ -452,7 +550,7 @@ fn create_pir_demo_database_compact(
 ) -> (
     BinaryFuseParams,
     DoublePirDatabase,
-    LweParams,
+    YpirParams,
     hibp::CheckerStats,
 ) {
     log_checkpoint("START: create_pir_demo_database_compact");
@@ -502,7 +600,7 @@ fn create_pir_demo_database_compact(
 /// Build PIR database from String key-value pairs (for PasswordChecker)
 fn build_pir_from_database(
     database: Vec<(String, Vec<u8>)>,
-) -> (BinaryFuseParams, DoublePirDatabase, LweParams) {
+) -> (BinaryFuseParams, DoublePirDatabase, YpirParams) {
     build_pir_from_database_generic(database)
 }
 
@@ -510,7 +608,7 @@ fn build_pir_from_database(
 /// Uses [u8; 20] keys AND [u8; 4] values - zero heap allocation per entry
 fn build_pir_from_database_fixed(
     database: Vec<([u8; 20], [u8; 4])>,
-) -> (BinaryFuseParams, DoublePirDatabase, LweParams) {
+) -> (BinaryFuseParams, DoublePirDatabase, YpirParams) {
     log_checkpoint("START: build_pir_from_database_fixed");
 
     let n = database.len();
@@ -571,20 +669,28 @@ fn build_pir_from_database_fixed(
     drop(filter);
     info!("Freed Binary Fuse Filter data");
 
-    let lwe_params = LweParams {
-        n: 64,
-        p: 256,
-        noise_stddev: 0.0,
+    // YPIR parameters: LWE dimension must match ring dimension for packing
+    let ypir_params = YpirParams {
+        lwe: pir::ypir::LweParams {
+            n: 64,
+            p: 256,
+            noise_stddev: 0.0,
+        },
+        packing: pir::ypir::PackingParams {
+            ring_dimension: 64,
+            plaintext_modulus: 256,
+            noise_stddev: 0.0,
+        },
     };
 
-    (filter_params, db, lwe_params)
+    (filter_params, db, ypir_params)
 }
 
 /// Generic PIR database builder - works with any hashable key type
 /// Memory is carefully managed - drops intermediates as soon as possible
 fn build_pir_from_database_generic<K: std::hash::Hash + Eq + Clone>(
     database: Vec<(K, Vec<u8>)>,
-) -> (BinaryFuseParams, DoublePirDatabase, LweParams) {
+) -> (BinaryFuseParams, DoublePirDatabase, YpirParams) {
     info!("PIR database: {} entries", database.len());
 
     let value_size = 4;
@@ -617,14 +723,22 @@ fn build_pir_from_database_generic<K: std::hash::Hash + Eq + Clone>(
     drop(filter);
     info!("Freed Binary Fuse Filter data");
 
-    // LWE parameters (test-friendly, not production secure)
-    let lwe_params = LweParams {
-        n: 64,
-        p: 256,
-        noise_stddev: 0.0, // Zero noise for demo (correctness over security)
+    // YPIR parameters: LWE dimension must match ring dimension for packing
+    // Using small dimensions for demo (not production secure)
+    let ypir_params = YpirParams {
+        lwe: pir::ypir::LweParams {
+            n: 64,
+            p: 256,
+            noise_stddev: 0.0, // Zero noise for demo (correctness over security)
+        },
+        packing: pir::ypir::PackingParams {
+            ring_dimension: 64, // Must match LWE dimension for homogeneous packing
+            plaintext_modulus: 256,
+            noise_stddev: 0.0,
+        },
     };
 
-    (filter_params, db, lwe_params)
+    (filter_params, db, ypir_params)
 }
 
 // ============================================================================
@@ -768,46 +882,48 @@ async fn main() {
     // Initialize PIR if enabled
     // For Compact checker: consume the data to free ~48 GB after PIR is built
     // For Standard checker: keep the checker for /check endpoint
-    let (checker, pir_server, filter_params, lwe_params, cached_stats) = if pir_enabled {
+    let (checker, pir_server, filter_params, ypir_params, cached_stats) = if pir_enabled {
         match checker {
             Checker::Standard(password_checker) => {
-                let (fuse_params, db, lwe_params) = create_pir_demo_database(&password_checker);
+                let (fuse_params, db, ypir_params) = create_pir_demo_database(&password_checker);
 
                 let mut rng = rand::rng();
-                let server = DoublePirServer::new(db, &lwe_params, &mut rng);
+                let server = YpirServer::new(db, &ypir_params, &mut rng);
 
-                info!("PIR server initialized:");
+                info!("YPIR server initialized:");
                 info!("  Records: {}", server.num_records());
                 info!("  Record size: {} bytes", server.record_size());
-                info!("  LWE dimension: {}", lwe_params.n);
+                info!("  LWE dimension: {}", ypir_params.lwe.n);
+                info!("  Ring dimension: {}", server.ring_dimension());
 
                 (
                     Some(Checker::Standard(password_checker)),
                     Some(server),
                     Some(fuse_params),
-                    Some(lwe_params),
+                    Some(ypir_params),
                     None,
                 )
             }
             Checker::Compact(compact_checker) => {
                 // CONSUME the checker to free ~48 GB RAM after PIR is built
-                let (fuse_params, db, lwe_params, stats) =
+                let (fuse_params, db, ypir_params, stats) =
                     create_pir_demo_database_compact(compact_checker);
 
                 let mut rng = rand::rng();
-                let server = DoublePirServer::new(db, &lwe_params, &mut rng);
+                let server = YpirServer::new(db, &ypir_params, &mut rng);
 
-                info!("PIR server initialized (PIR-only mode):");
+                info!("YPIR server initialized (PIR-only mode):");
                 info!("  Records: {}", server.num_records());
                 info!("  Record size: {} bytes", server.record_size());
-                info!("  LWE dimension: {}", lwe_params.n);
+                info!("  LWE dimension: {}", ypir_params.lwe.n);
+                info!("  Ring dimension: {}", server.ring_dimension());
                 info!("  /check disabled - use /pir/query for private lookups");
 
                 (
                     None,
                     Some(server),
                     Some(fuse_params),
-                    Some(lwe_params),
+                    Some(ypir_params),
                     Some(stats),
                 )
             }
@@ -820,16 +936,18 @@ async fn main() {
         checker,
         pir_server,
         filter_params,
-        lwe_params,
+        ypir_params,
         cached_stats,
     });
 
     // Build router
+    // YPIR queries include packing keys (~10-20 MB), so we need a larger body limit
     let app = Router::new()
         .route("/health", get(health))
         .route("/check", post(check))
         .route("/pir/setup", get(pir_setup))
         .route("/pir/query", post(pir_query))
+        .layer(DefaultBodyLimit::max(50 * 1024 * 1024)) // 50 MB for YPIR queries
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state);

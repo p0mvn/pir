@@ -27,4 +27,7 @@ harness = false
 name = "ntt_benchmark"
 harness = false
 
+[[bench]]
+name = "ypir_benchmark"
+harness = false
 

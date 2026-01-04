@@ -17,17 +17,17 @@ export class PirClient {
    */
   static hash_password(password: string): string;
   /**
+   * Get the LWE dimension
+   */
+  lwe_dimension(): number;
+  /**
    * XOR three records to decode the final value
    */
   decode_keyword(rec0: Uint8Array, rec1: Uint8Array, rec2: Uint8Array): Uint8Array;
   /**
-   * Debug: Get the first few elements of A_col matrix
+   * Get the ring dimension used for RLWE packing
    */
-  get_a_col_data(): Uint32Array;
-  /**
-   * Debug: Get the first few elements of A_row matrix
-   */
-  get_a_row_data(): Uint32Array;
+  ring_dimension(): number;
   /**
    * Get the 3 record indices for a keyword (hash) query
    */
@@ -39,15 +39,15 @@ export class PirClient {
   /**
    * Create a new PIR client from setup data (JSON)
    */
-  constructor(setup_json: string, lwe_params_json: string, filter_params_json: string);
+  constructor(setup_json: string, ypir_params_json: string, filter_params_json: string);
   /**
    * Generate a PIR query for a specific record index
-   * Returns JSON: { state: JsQueryState, query: JsDoublePirQuery }
+   * Returns JSON: { state: JsQueryState, query: JsYpirQuery }
    */
   query(record_idx: number): string;
   /**
    * Recover a record from the server's answer
-   * Takes: state_json (JsQueryState), answer_json (JsDoublePirAnswer)
+   * Takes: state_json (JsQueryState), answer_json (JsYpirAnswer)
    * Returns: the recovered bytes as a Uint8Array
    */
   recover(state_json: string, answer_json: string): Uint8Array;
@@ -66,16 +66,16 @@ export interface InitOutput {
   readonly memory: WebAssembly.Memory;
   readonly __wbg_pirclient_free: (a: number, b: number) => void;
   readonly pirclient_decode_keyword: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
-  readonly pirclient_get_a_col_data: (a: number) => [number, number];
-  readonly pirclient_get_a_row_data: (a: number) => [number, number];
   readonly pirclient_get_keyword_indices: (a: number, b: number, c: number) => [number, number];
   readonly pirclient_get_password_indices: (a: number, b: number, c: number) => [number, number];
   readonly pirclient_hash_password: (a: number, b: number) => [number, number];
+  readonly pirclient_lwe_dimension: (a: number) => number;
   readonly pirclient_new: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
   readonly pirclient_num_records: (a: number) => number;
   readonly pirclient_query: (a: number, b: number) => [number, number, number, number];
   readonly pirclient_record_size: (a: number) => number;
   readonly pirclient_recover: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+  readonly pirclient_ring_dimension: (a: number) => number;
   readonly version: () => [number, number];
   readonly init: () => void;
   readonly __wbindgen_free: (a: number, b: number, c: number) => void;
