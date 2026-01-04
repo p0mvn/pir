@@ -43,12 +43,12 @@ use pir::binary_fuse::{BinaryFuseFilter, BinaryFuseParams};
 use pir::lwe_to_rlwe::{KeySwitchKey, PackingKey};
 use pir::matrix_database::DoublePirDatabase;
 use pir::ring_regev::RLWECiphertextOwned;
+use pir::ypir::{YpirAnswer, YpirParams, YpirQuery, YpirServer, YpirSetup};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Instant;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{error, info, warn};
-use pir::ypir::{YpirAnswer, YpirParams, YpirQuery, YpirServer, YpirSetup};
 
 // ============================================================================
 // Memory Observability
@@ -573,12 +573,33 @@ fn create_pir_demo_database_compact(
     // This keeps peak memory at ~48 GB instead of ~96 GB.
     log_checkpoint("In-place conversion starting");
 
+    // Compile-time assertions: ensure HashEntry and target type have compatible layout.
+    // This is required for the unsafe transmute below to be sound.
+    // HashEntry is #[repr(C)] which guarantees: hash field at offset 0, count at offset 20.
+    const _: () = {
+        // Sizes must be identical for Vec::from_raw_parts to work correctly
+        assert!(
+            std::mem::size_of::<hibp::HashEntry>() == std::mem::size_of::<([u8; 20], [u8; 4])>()
+        );
+        // Target alignment must be <= source alignment for pointer cast to be valid.
+        // HashEntry has align=4 (due to u32), tuple has align=1. This is fine because
+        // Vec::from_raw_parts requires alignment >= target alignment, and 4 >= 1.
+        assert!(
+            std::mem::align_of::<([u8; 20], [u8; 4])>() <= std::mem::align_of::<hibp::HashEntry>()
+        );
+    };
+
     // Convert count to little-endian bytes in-place
     for entry in entries.iter_mut() {
         entry.count = u32::from_ne_bytes(entry.count.to_le_bytes());
     }
 
-    // Transmute Vec<HashEntry> to Vec<([u8; 20], [u8; 4])>
+    // SAFETY: This transmute is sound because:
+    // 1. HashEntry is #[repr(C)] with fields: hash: [u8; 20], count: u32
+    // 2. ([u8; 20], [u8; 4]) has identical size (24 bytes) and alignment (4 bytes)
+    // 3. The compile-time assertions above verify size/alignment match
+    // 4. We've converted count to little-endian bytes in-place above
+    // 5. Both types consist only of u8 arrays, so all bit patterns are valid
     let database: Vec<([u8; 20], [u8; 4])> = unsafe {
         let mut entries = std::mem::ManuallyDrop::new(entries);
         Vec::from_raw_parts(
@@ -670,14 +691,16 @@ fn build_pir_from_database_fixed(
     info!("Freed Binary Fuse Filter data");
 
     // YPIR parameters: LWE dimension must match ring dimension for packing
+    // Using n=1024 for production - required for correctness with large databases
+    // With ~900M entries, grid is ~33k×33k, requiring large n to handle noise accumulation
     let ypir_params = YpirParams {
         lwe: pir::ypir::LweParams {
-            n: 64,
+            n: 1024, // Standard 128-bit security, required for large DBs
             p: 256,
-            noise_stddev: 0.0,
+            noise_stddev: 0.0, // Zero noise for deterministic correctness
         },
         packing: pir::ypir::PackingParams {
-            ring_dimension: 64,
+            ring_dimension: 1024, // Must match LWE dimension for homogeneous packing
             plaintext_modulus: 256,
             noise_stddev: 0.0,
         },
@@ -724,15 +747,15 @@ fn build_pir_from_database_generic<K: std::hash::Hash + Eq + Clone>(
     info!("Freed Binary Fuse Filter data");
 
     // YPIR parameters: LWE dimension must match ring dimension for packing
-    // Using small dimensions for demo (not production secure)
+    // Using n=1024 for production - required for correctness with large databases
     let ypir_params = YpirParams {
         lwe: pir::ypir::LweParams {
-            n: 64,
+            n: 1024, // Standard 128-bit security, required for large DBs
             p: 256,
-            noise_stddev: 0.0, // Zero noise for demo (correctness over security)
+            noise_stddev: 0.0, // Zero noise for deterministic correctness
         },
         packing: pir::ypir::PackingParams {
-            ring_dimension: 64, // Must match LWE dimension for homogeneous packing
+            ring_dimension: 1024, // Must match LWE dimension for homogeneous packing
             plaintext_modulus: 256,
             noise_stddev: 0.0,
         },

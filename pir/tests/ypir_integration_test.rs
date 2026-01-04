@@ -619,3 +619,144 @@ fn test_ypir_answer_accessors() {
     assert!(answer.num_ciphertexts() > 0);
     assert_eq!(answer.num_ciphertexts(), answer.packed_cts.len());
 }
+
+// ============================================================================
+// Realistic Noise Tests
+// ============================================================================
+
+/// Test parameters with realistic (non-zero) noise levels.
+///
+/// These parameters are more representative of production usage than the
+/// zero-noise test parameters used above. They verify that the protocol
+/// correctly tolerates cryptographic noise.
+fn test_params_realistic_noise() -> YpirParams {
+    YpirParams {
+        lwe: LweParams {
+            n: 32,
+            p: 256,
+            noise_stddev: 3.2, // Realistic Gaussian noise
+        },
+        packing: PackingParams {
+            ring_dimension: 32,
+            plaintext_modulus: 256,
+            noise_stddev: 3.2,
+        },
+    }
+}
+
+/// YPIR round-trip with realistic noise levels.
+///
+/// This tests that the protocol correctly handles cryptographic noise,
+/// unlike the deterministic zero-noise tests above.
+#[test]
+fn test_ypir_with_realistic_noise() {
+    let mut rng = rand::rng();
+    let params = test_params_realistic_noise();
+
+    // Create a small database
+    let records = create_test_records(16, 8);
+    let record_refs: Vec<&[u8]> = records.iter().map(|r| r.as_slice()).collect();
+    let db = DoublePirDatabase::new(&record_refs, 8);
+
+    let server = YpirServer::new(db, &params, &mut rng);
+    let setup = server.setup();
+    let client = YpirClient::new(setup, params);
+
+    // Test multiple records to ensure noise tolerance is consistent
+    for target_idx in 0..16 {
+        let (state, query) = client.query(target_idx, &mut rng);
+        let answer = server.answer(&query);
+        let recovered = client.recover(&state, &answer);
+
+        assert_eq!(
+            recovered, records[target_idx],
+            "Noisy decryption failed for record {}: expected {:?}, got {:?}",
+            target_idx, records[target_idx], recovered
+        );
+    }
+}
+
+/// Test noise tolerance with varied data patterns.
+///
+/// Ensures that different data patterns (zeros, max values, varied) all
+/// decrypt correctly under realistic noise conditions.
+#[test]
+fn test_ypir_noise_tolerance_varied_data() {
+    let mut rng = rand::rng();
+    let params = test_params_realistic_noise();
+
+    // Create records with varied patterns
+    let records: Vec<Vec<u8>> = vec![
+        vec![0u8; 8],                                      // All zeros
+        vec![255u8; 8],                                    // All max
+        vec![0, 255, 0, 255, 0, 255, 0, 255],              // Alternating
+        vec![1, 2, 3, 4, 5, 6, 7, 8],                      // Sequential
+        vec![128, 64, 32, 16, 8, 4, 2, 1],                 // Powers of 2
+        vec![170, 85, 170, 85, 170, 85, 170, 85],          // 0xAA, 0x55 pattern
+        vec![0, 0, 0, 0, 255, 255, 255, 255],              // Half zeros, half max
+        vec![42, 42, 42, 42, 42, 42, 42, 42],              // All same non-zero
+        vec![100, 200, 50, 150, 25, 175, 75, 125],         // Varied
+    ];
+
+    let record_refs: Vec<&[u8]> = records.iter().map(|r| r.as_slice()).collect();
+    let db = DoublePirDatabase::new(&record_refs, 8);
+
+    let server = YpirServer::new(db, &params, &mut rng);
+    let setup = server.setup();
+    let client = YpirClient::new(setup, params);
+
+    for (target_idx, expected) in records.iter().enumerate() {
+        let (state, query) = client.query(target_idx, &mut rng);
+        let answer = server.answer(&query);
+        let recovered = client.recover(&state, &answer);
+
+        assert_eq!(
+            &recovered, expected,
+            "Noisy decryption failed for pattern {} (record {})",
+            match target_idx {
+                0 => "all zeros",
+                1 => "all max",
+                2 => "alternating",
+                3 => "sequential",
+                4 => "powers of 2",
+                5 => "0xAA/0x55",
+                6 => "half zeros",
+                7 => "all same",
+                _ => "varied",
+            },
+            target_idx
+        );
+    }
+}
+
+/// Test multiple queries with noise - ensure independence.
+///
+/// Verifies that repeated queries to the same record produce consistent
+/// results despite different noise realizations.
+#[test]
+fn test_ypir_noise_query_independence() {
+    let mut rng = rand::rng();
+    let params = test_params_realistic_noise();
+
+    let records = create_test_records(9, 8);
+    let record_refs: Vec<&[u8]> = records.iter().map(|r| r.as_slice()).collect();
+    let db = DoublePirDatabase::new(&record_refs, 8);
+
+    let server = YpirServer::new(db, &params, &mut rng);
+    let setup = server.setup();
+    let client = YpirClient::new(setup, params);
+
+    // Query the same record multiple times with different noise realizations
+    let target_idx = 4;
+    for iteration in 0..5 {
+        let (state, query) = client.query(target_idx, &mut rng);
+        let answer = server.answer(&query);
+        let recovered = client.recover(&state, &answer);
+
+        assert_eq!(
+            recovered, records[target_idx],
+            "Noisy decryption failed on iteration {} for record {}",
+            iteration, target_idx
+        );
+    }
+}

@@ -865,10 +865,19 @@ fn compute_positions(hash: u64, segment_size: usize, mask: u32) -> [usize; 3] {
 }
 
 /// Calculate segment size (power of 2 for fast modulo)
+///
+/// Returns the smallest power of 2 that can hold (n * EXPANSION_FACTOR / ARITY) entries.
+///
+/// # Panics
+///
+/// Panics if the segment size would overflow `usize`. This can happen with extremely
+/// large databases (>2^62 entries on 64-bit systems).
 fn calculate_segment_size(n: usize) -> usize {
     let target = ((n as f64 * EXPANSION_FACTOR) / ARITY as f64).ceil() as usize;
-    // Round up to next power of 2
-    target.next_power_of_two()
+    // Round up to next power of 2, with overflow check for very large databases
+    target
+        .checked_next_power_of_two()
+        .expect("Binary Fuse Filter segment size overflow: database too large")
 }
 
 // ============================================================================
