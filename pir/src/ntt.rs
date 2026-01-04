@@ -396,18 +396,18 @@ impl CrtParams {
         let ntt1 = NttParams::new(d);
         let ntt2 = NttParams::with_prime(d, NTT_PRIME_2, PRIMITIVE_ROOT_2);
         let ntt3 = NttParams::with_prime(d, NTT_PRIME_3, PRIMITIVE_ROOT_3);
-        
+
         let p1 = NTT_PRIME;
         let p2 = NTT_PRIME_2;
         let p3 = NTT_PRIME_3;
-        
+
         // Precompute CRT coefficients
         let inv_p1_mod_p2 = mod_inv(p1 % p2, p2);
         let p1_times_p2 = p1 as u128 * p2 as u128;
         let inv_p1p2_mod_p3 = mod_inv((p1_times_p2 % p3 as u128) as u64, p3);
-        
+
         let modulus_product = p1_times_p2 * p3 as u128;
-        
+
         Self {
             ntt1,
             ntt2,
@@ -424,10 +424,14 @@ impl NttParams {
     /// Create NTT parameters for a specific prime.
     pub fn with_prime(d: usize, prime: u64, primitive_root: u64) -> Self {
         assert!(d > 0 && d.is_power_of_two(), "d must be a power of 2");
-        
+
         // Check that 2d divides (prime - 1) for 2d-th roots of unity
         let order = prime - 1;
-        assert!(order % (2 * d as u64) == 0, "Prime doesn't support dimension {}", d);
+        assert!(
+            order.is_multiple_of(2 * d as u64),
+            "Prime doesn't support dimension {}",
+            d
+        );
 
         // ψ = g^((q-1)/(2d)) is a primitive 2d-th root of unity
         let psi = mod_pow(primitive_root, order / (2 * d as u64), prime);
@@ -457,7 +461,7 @@ impl NttParams {
             n_inv,
         }
     }
-    
+
     /// Get the prime associated with these parameters.
     /// Note: This returns NTT_PRIME for backwards compatibility with existing NttParams.
     pub fn prime(&self) -> u64 {
@@ -578,24 +582,24 @@ fn crt_reconstruct_mod_2_32(r1: u64, r2: u64, r3: u64, crt: &CrtParams) -> u32 {
     let p1 = NTT_PRIME;
     let p2 = NTT_PRIME_2;
     let p3 = NTT_PRIME_3;
-    
+
     // Step 1: Combine r1 and r2 to get x mod (p1*p2)
     // x = r1 + p1 * ((r2 - r1) * p1^(-1) mod p2)
     let diff_12 = if r2 >= r1 { r2 - r1 } else { p2 - r1 % p2 + r2 };
     let k1 = mod_mul(diff_12, crt.inv_p1_mod_p2, p2);
     let x_12: u128 = r1 as u128 + (p1 as u128) * (k1 as u128);
-    
+
     // Step 2: Combine x_12 and r3 to get x mod (p1*p2*p3)
     // x = x_12 + (p1*p2) * ((r3 - x_12 mod p3) * (p1*p2)^(-1) mod p3)
     let x_12_mod_p3 = (x_12 % p3 as u128) as u64;
-    let diff_123 = if r3 >= x_12_mod_p3 { 
-        r3 - x_12_mod_p3 
-    } else { 
-        p3 - x_12_mod_p3 + r3 
+    let diff_123 = if r3 >= x_12_mod_p3 {
+        r3 - x_12_mod_p3
+    } else {
+        p3 - x_12_mod_p3 + r3
     };
     let k2 = mod_mul(diff_123, crt.inv_p1p2_mod_p3, p3);
     let x: u128 = x_12 + crt.p1_times_p2 * (k2 as u128);
-    
+
     // Step 3: Handle signed values
     // If x > modulus_product/2, it represents a negative number
     let half_modulus = crt.modulus_product / 2;
@@ -604,7 +608,7 @@ fn crt_reconstruct_mod_2_32(r1: u64, r2: u64, r3: u64, crt: &CrtParams) -> u32 {
     } else {
         x as i128
     };
-    
+
     // Step 4: Reduce mod 2^32
     // Rust's as u32 does the right thing for negative numbers (wrapping)
     signed_x as u32
@@ -628,37 +632,43 @@ pub fn poly_mul_u32_crt(a: &[u32], b: &[u32], crt: &CrtParams) -> Vec<u32> {
     let d = crt.ntt1.d;
     assert_eq!(a.len(), d);
     assert_eq!(b.len(), d);
-    
+
     // NTT multiplication in first prime field (p1)
     let mut a1: Vec<u64> = a.iter().map(|&x| x as u64).collect();
     let mut b1: Vec<u64> = b.iter().map(|&x| x as u64).collect();
     ntt_forward(&mut a1, &crt.ntt1);
     ntt_forward(&mut b1, &crt.ntt1);
-    let mut c1: Vec<u64> = a1.iter().zip(b1.iter())
+    let mut c1: Vec<u64> = a1
+        .iter()
+        .zip(b1.iter())
         .map(|(&x, &y)| mod_mul(x, y, NTT_PRIME))
         .collect();
     ntt_inverse(&mut c1, &crt.ntt1);
-    
+
     // NTT multiplication in second prime field (p2)
     let mut a2: Vec<u64> = a.iter().map(|&x| x as u64).collect();
     let mut b2: Vec<u64> = b.iter().map(|&x| x as u64).collect();
     ntt_forward_with_prime(&mut a2, &crt.ntt2, NTT_PRIME_2);
     ntt_forward_with_prime(&mut b2, &crt.ntt2, NTT_PRIME_2);
-    let mut c2: Vec<u64> = a2.iter().zip(b2.iter())
+    let mut c2: Vec<u64> = a2
+        .iter()
+        .zip(b2.iter())
         .map(|(&x, &y)| mod_mul(x, y, NTT_PRIME_2))
         .collect();
     ntt_inverse_with_prime(&mut c2, &crt.ntt2, NTT_PRIME_2);
-    
+
     // NTT multiplication in third prime field (p3)
     let mut a3: Vec<u64> = a.iter().map(|&x| x as u64).collect();
     let mut b3: Vec<u64> = b.iter().map(|&x| x as u64).collect();
     ntt_forward_with_prime(&mut a3, &crt.ntt3, NTT_PRIME_3);
     ntt_forward_with_prime(&mut b3, &crt.ntt3, NTT_PRIME_3);
-    let mut c3: Vec<u64> = a3.iter().zip(b3.iter())
+    let mut c3: Vec<u64> = a3
+        .iter()
+        .zip(b3.iter())
         .map(|(&x, &y)| mod_mul(x, y, NTT_PRIME_3))
         .collect();
     ntt_inverse_with_prime(&mut c3, &crt.ntt3, NTT_PRIME_3);
-    
+
     // CRT reconstruction: combine results from all three primes
     (0..d)
         .map(|i| crt_reconstruct_mod_2_32(c1[i], c2[i], c3[i], crt))
@@ -910,17 +920,27 @@ mod tests {
     fn test_additional_primes_are_valid() {
         // Verify that the additional primes support NTT for reasonable dimensions
         let d = 256;
-        
+
         // NTT_PRIME_2 should have 2d-th roots of unity
         let order2 = NTT_PRIME_2 - 1;
-        assert_eq!(order2 % (2 * d as u64), 0, "NTT_PRIME_2 doesn't support d={}", d);
+        assert_eq!(
+            order2 % (2 * d as u64),
+            0,
+            "NTT_PRIME_2 doesn't support d={}",
+            d
+        );
         let psi2 = mod_pow(PRIMITIVE_ROOT_2, order2 / (2 * d as u64), NTT_PRIME_2);
         assert_eq!(mod_pow(psi2, 2 * d as u64, NTT_PRIME_2), 1);
         assert_eq!(mod_pow(psi2, d as u64, NTT_PRIME_2), NTT_PRIME_2 - 1);
-        
+
         // NTT_PRIME_3 should have 2d-th roots of unity
         let order3 = NTT_PRIME_3 - 1;
-        assert_eq!(order3 % (2 * d as u64), 0, "NTT_PRIME_3 doesn't support d={}", d);
+        assert_eq!(
+            order3 % (2 * d as u64),
+            0,
+            "NTT_PRIME_3 doesn't support d={}",
+            d
+        );
         let psi3 = mod_pow(PRIMITIVE_ROOT_3, order3 / (2 * d as u64), NTT_PRIME_3);
         assert_eq!(mod_pow(psi3, 2 * d as u64, NTT_PRIME_3), 1);
         assert_eq!(mod_pow(psi3, d as u64, NTT_PRIME_3), NTT_PRIME_3 - 1);
@@ -930,13 +950,13 @@ mod tests {
     fn test_crt_mul_simple() {
         let d = 4;
         let crt = CrtParams::new(d);
-        
+
         // (1 + x) * (1 + x) = 1 + 2x + x²
         let a: Vec<u32> = vec![1, 1, 0, 0];
         let b: Vec<u32> = vec![1, 1, 0, 0];
-        
+
         let result = poly_mul_u32_crt(&a, &b, &crt);
-        
+
         assert_eq!(result, vec![1, 2, 1, 0]);
     }
 
@@ -944,14 +964,14 @@ mod tests {
     fn test_crt_mul_negacyclic() {
         let d = 4;
         let crt = CrtParams::new(d);
-        
+
         // x³ * x = x⁴ = -1 (mod x⁴ + 1)
         // -1 mod 2^32 = u32::MAX
         let a: Vec<u32> = vec![0, 0, 0, 1];
         let b: Vec<u32> = vec![0, 1, 0, 0];
-        
+
         let result = poly_mul_u32_crt(&a, &b, &crt);
-        
+
         assert_eq!(result, vec![u32::MAX, 0, 0, 0]);
     }
 
@@ -959,21 +979,21 @@ mod tests {
     fn test_crt_mul_matches_schoolbook() {
         use rand::Rng;
         let mut rng = rand::rng();
-        
+
         for log_d in [2, 3, 4, 5, 6] {
             let d = 1 << log_d;
             let crt = CrtParams::new(d);
-            
+
             // Generate random u32 polynomials
             let a: Vec<u32> = (0..d).map(|_| rng.random()).collect();
             let b: Vec<u32> = (0..d).map(|_| rng.random()).collect();
-            
+
             // CRT-based NTT multiplication
             let ntt_result = poly_mul_u32_crt(&a, &b, &crt);
-            
+
             // Schoolbook multiplication with u32 wrapping arithmetic
             let schoolbook_result = poly_mul_schoolbook_u32(&a, &b, d);
-            
+
             assert_eq!(ntt_result, schoolbook_result, "Failed for d={}", d);
         }
     }
@@ -1000,12 +1020,12 @@ mod tests {
     fn test_crt_mul_identity() {
         let d = 8;
         let crt = CrtParams::new(d);
-        
+
         let a: Vec<u32> = vec![3, 1, 4, 1, 5, 9, 2, 6];
         let one: Vec<u32> = vec![1, 0, 0, 0, 0, 0, 0, 0];
-        
+
         let result = poly_mul_u32_crt(&a, &one, &crt);
-        
+
         assert_eq!(result, a);
     }
 
@@ -1013,17 +1033,21 @@ mod tests {
     fn test_crt_mul_with_large_coefficients() {
         use rand::Rng;
         let mut rng = rand::rng();
-        
+
         let d = 8;
         let crt = CrtParams::new(d);
-        
+
         // Use very large coefficients near u32::MAX
-        let a: Vec<u32> = (0..d).map(|_| rng.random_range(u32::MAX - 1000..=u32::MAX)).collect();
-        let b: Vec<u32> = (0..d).map(|_| rng.random_range(u32::MAX - 1000..=u32::MAX)).collect();
-        
+        let a: Vec<u32> = (0..d)
+            .map(|_| rng.random_range(u32::MAX - 1000..=u32::MAX))
+            .collect();
+        let b: Vec<u32> = (0..d)
+            .map(|_| rng.random_range(u32::MAX - 1000..=u32::MAX))
+            .collect();
+
         let ntt_result = poly_mul_u32_crt(&a, &b, &crt);
         let schoolbook_result = poly_mul_schoolbook_u32(&a, &b, d);
-        
+
         assert_eq!(ntt_result, schoolbook_result);
     }
 
@@ -1031,23 +1055,25 @@ mod tests {
     fn test_crt_mul_ternary_secret() {
         use rand::Rng;
         let mut rng = rand::rng();
-        
+
         let d = 16;
         let crt = CrtParams::new(d);
-        
+
         // Simulate RLWE encryption: random 'a' × ternary 's'
         let a: Vec<u32> = (0..d).map(|_| rng.random()).collect();
-        let s: Vec<u32> = (0..d).map(|_| {
-            match rng.random_range(0..3u32) {
-                0 => 0u32,
-                1 => 1u32,
-                _ => u32::MAX, // -1 mod 2^32
-            }
-        }).collect();
-        
+        let s: Vec<u32> = (0..d)
+            .map(|_| {
+                match rng.random_range(0..3u32) {
+                    0 => 0u32,
+                    1 => 1u32,
+                    _ => u32::MAX, // -1 mod 2^32
+                }
+            })
+            .collect();
+
         let ntt_result = poly_mul_u32_crt(&a, &s, &crt);
         let schoolbook_result = poly_mul_schoolbook_u32(&a, &s, d);
-        
+
         assert_eq!(ntt_result, schoolbook_result);
     }
 }

@@ -238,9 +238,7 @@ mod tests {
 
     #[test]
     fn test_communication_cost_empty_answer() {
-        let answer = YpirAnswer {
-            packed_cts: vec![],
-        };
+        let answer = YpirAnswer { packed_cts: vec![] };
         assert_eq!(answer.size_bytes(), 0);
     }
 
@@ -249,9 +247,7 @@ mod tests {
         let d = 4;
 
         // Zero ciphertexts
-        let answer_empty = YpirAnswer {
-            packed_cts: vec![],
-        };
+        let answer_empty = YpirAnswer { packed_cts: vec![] };
         assert_eq!(answer_empty.num_ciphertexts(), 0);
 
         // One ciphertext

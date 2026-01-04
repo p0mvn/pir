@@ -138,10 +138,11 @@ impl YpirServer {
                 // Compute a_eff for this (row, byte)
                 let mut a_eff = vec![0u32; n];
                 for col in 0..num_cols {
-                    let db_val = self.db.get(row, col, byte_idx) as u32;
+                    let db_val = self.db.get(row, col, byte_idx);
                     if db_val != 0 {
                         for k in 0..n {
-                            a_eff[k] = a_eff[k].wrapping_add(db_val.wrapping_mul(a_col.get(col, k)));
+                            a_eff[k] =
+                                a_eff[k].wrapping_add(db_val.wrapping_mul(a_col.get(col, k)));
                         }
                     }
                 }

@@ -165,7 +165,11 @@ pub fn add_scaled_rlwe_ciphertext(
 /// This avoids allocating new vectors on each accumulation, which is
 /// critical for performance in the key_switch inner loop.
 #[inline]
-fn add_scaled_rlwe_ciphertext_inplace(ct1: &mut RLWECiphertextOwned, scalar: u32, ct2: &RLWECiphertextOwned) {
+fn add_scaled_rlwe_ciphertext_inplace(
+    ct1: &mut RLWECiphertextOwned,
+    scalar: u32,
+    ct2: &RLWECiphertextOwned,
+) {
     for (a1, a2) in ct1.a.coeffs.iter_mut().zip(&ct2.a.coeffs) {
         *a1 = a1.wrapping_add(a2.wrapping_mul(scalar));
     }

@@ -280,7 +280,7 @@ fn test_ypir_larger_database() {
 
         assert_eq!(
             recovered, records[target_idx],
-        "Failed for larger DB at index {}",
+            "Failed for larger DB at index {}",
             target_idx
         );
     }
