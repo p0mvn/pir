@@ -6,7 +6,8 @@
 use rand::Rng;
 
 use pir::double::DoublePirClient;
-use pir::lwe_to_rlwe::{decode_packed_result, decrypt_raw, gen_packing_key};
+use pir::lwe_to_rlwe::{decode_packed_result, decrypt_raw_with_crt, gen_packing_key};
+use pir::ntt::CrtParams;
 use pir::params::LweParams;
 use pir::pir_trait::PirClient as PirClientTrait;
 use pir::ring::RingElement;
@@ -155,9 +156,12 @@ impl YpirClient {
         // Layout: intermediate[row * record_size + byte] = value for (row, byte)
         let mut all_intermediate: Vec<u8> = Vec::new();
 
+        // Precompute CRT parameters once (expensive NTT table setup)
+        let crt = CrtParams::new(self.ring_dim);
+
         for ct in &answer.packed_cts {
             // Raw decryption: c - a·s ≈ Δ·m + noise
-            let noisy = decrypt_raw(&state.rlwe_secret, ct);
+            let noisy = decrypt_raw_with_crt(&state.rlwe_secret, ct, &crt);
 
             // Decode: round(coeff/Δ) mod p
             let decoded = decode_packed_result(&noisy, delta, p);
@@ -250,7 +254,7 @@ impl PirClientTrait for YpirClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pir::lwe_to_rlwe::pack_with_key_switching;
+    use pir::lwe_to_rlwe::{decrypt_raw, pack_with_key_switching};
     use pir::regev::{self, CiphertextOwned, SecretKey};
 
     /// Test that packing key generation works correctly
